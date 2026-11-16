@@ -98,17 +98,14 @@
             const cx = canvas.width / 2;
             const cy = canvas.height / 2;
 
-            // Gambar Alas
             if (imgAlas.complete && imgAlas.naturalWidth > 0) {
                 ctx.drawImage(imgAlas, cx - imgAlas.width/2, cy - imgAlas.height/2);
             }
 
-            // Gambar Rumah Meriam
             if (imgRumah.complete && imgRumah.naturalWidth > 0) {
                 ctx.drawImage(imgRumah, cx - imgRumah.width/2, cy - imgRumah.height/2);
             }
 
-            // Gambar Laras (Diulang 3x untuk efek triple barrel)
             if (imgLaras.complete && imgLaras.naturalWidth > 0) {
                 ctx.save();
                 ctx.translate(cx, cy);
@@ -116,7 +113,6 @@
                 
                 const recoilOffset = recoil;
                 
-                // Menggambar 3 laras berjejer dengan jarak
                 ctx.drawImage(imgLaras, -imgLaras.width/2 - 15, -imgLaras.height/2 - recoilOffset);
                 ctx.drawImage(imgLaras, -imgLaras.width/2, -imgLaras.height/2 - recoilOffset);
                 ctx.drawImage(imgLaras, -imgLaras.width/2 + 15, -imgLaras.height/2 - recoilOffset);
@@ -124,13 +120,11 @@
                 ctx.restore();
             }
 
-            // Gambar Peluru
             if (imgPeluru.complete && imgPeluru.naturalWidth > 0) {
                 for (let b of bullets) {
                     ctx.save();
                     ctx.translate(b.x, b.y);
                     ctx.rotate(b.angle);
-                    // Perkecil peluru (skala 0.3 dari ukuran asli)
                     const scale = 0.3;
                     ctx.drawImage(imgPeluru, -imgPeluru.width*scale/2, -imgPeluru.height*scale/2, imgPeluru.width*scale, imgPeluru.height*scale);
                     ctx.restore();
