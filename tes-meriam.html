@@ -1,0 +1,146 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Laboratorium Uji Meriam</title>
+    <style>
+        body, html { margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden; background-color: #1a1a2e; }
+        canvas { display: block; touch-action: none; }
+        #instruksi {
+            position: absolute; top: 10px; width: 100%; text-align: center;
+            color: #0f0; font-family: monospace; font-size: 14px; pointer-events: none;
+        }
+    </style>
+</head>
+<body>
+    <div id="instruksi">Geser Jari = Putar Laras | Tap Layar = Tembak</div>
+    <canvas id="gameCanvas"></canvas>
+
+    <script>
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+        
+        function resize() {
+            canvas.width = window.innerWidth;
+            canvas.height = window.innerHeight;
+        }
+        window.addEventListener('resize', resize);
+        resize();
+
+        // ==========================================
+        // MEMANGGIL FILE GAMBAR DARI GITHUB
+        // ==========================================
+        const imgAlas = new Image(); imgAlas.src = "Selection (7) (1).png";
+        const imgRumah = new Image(); imgRumah.src = "Selection (1) (2).png";
+        const imgLaras = new Image(); imgLaras.src = "Selection (1) (3).png";
+        const imgPeluru = new Image(); imgPeluru.src = "Selection (4).png";
+
+        let currentAngle = 0;
+        let targetAngle = 0;
+        let recoil = 0;
+        let bullets = [];
+
+        function handleMove(e) {
+            const rect = canvas.getBoundingClientRect();
+            const clientX = e.touches ? e.touches[0].clientX : e.clientX;
+            const clientY = e.touches ? e.touches[0].clientY : e.clientY;
+            
+            const mouseX = clientX - rect.left;
+            const mouseY = clientY - rect.top;
+            
+            const centerX = canvas.width / 2;
+            const centerY = canvas.height / 2;
+            
+            targetAngle = Math.atan2(mouseY - centerY, mouseX - centerX);
+        }
+
+        function handleShoot(e) {
+            handleMove(e); 
+            
+            const centerX = canvas.width / 2;
+            const centerY = canvas.height / 2;
+            const tipX = centerX + Math.cos(currentAngle) * 80;
+            const tipY = centerY + Math.sin(currentAngle) * 80;
+            
+            bullets.push({
+                x: tipX, y: tipY,
+                vx: Math.cos(currentAngle) * 10,
+                vy: Math.sin(currentAngle) * 10,
+                angle: currentAngle
+            });
+            
+            recoil = 15;
+        }
+
+        canvas.addEventListener('pointermove', handleMove);
+        canvas.addEventListener('pointerdown', handleShoot);
+
+        function loop() {
+            let diff = targetAngle - currentAngle;
+            while (diff > Math.PI) diff -= Math.PI * 2;
+            while (diff < -Math.PI) diff += Math.PI * 2;
+            currentAngle += diff * 0.1;
+
+            if (recoil > 0) recoil -= 1;
+
+            for (let i = bullets.length - 1; i >= 0; i--) {
+                bullets[i].x += bullets[i].vx;
+                bullets[i].y += bullets[i].vy;
+                if (bullets[i].x < 0 || bullets[i].x > canvas.width || bullets[i].y < 0 || bullets[i].y > canvas.height) {
+                    bullets.splice(i, 1);
+                }
+            }
+
+            ctx.fillStyle = '#1a1a2e';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+            const cx = canvas.width / 2;
+            const cy = canvas.height / 2;
+
+            // Gambar Alas
+            if (imgAlas.complete && imgAlas.naturalWidth > 0) {
+                ctx.drawImage(imgAlas, cx - imgAlas.width/2, cy - imgAlas.height/2);
+            }
+
+            // Gambar Rumah Meriam
+            if (imgRumah.complete && imgRumah.naturalWidth > 0) {
+                ctx.drawImage(imgRumah, cx - imgRumah.width/2, cy - imgRumah.height/2);
+            }
+
+            // Gambar Laras (Diulang 3x untuk efek triple barrel)
+            if (imgLaras.complete && imgLaras.naturalWidth > 0) {
+                ctx.save();
+                ctx.translate(cx, cy);
+                ctx.rotate(currentAngle);
+                
+                const recoilOffset = recoil;
+                
+                // Menggambar 3 laras berjejer dengan jarak
+                ctx.drawImage(imgLaras, -imgLaras.width/2 - 15, -imgLaras.height/2 - recoilOffset);
+                ctx.drawImage(imgLaras, -imgLaras.width/2, -imgLaras.height/2 - recoilOffset);
+                ctx.drawImage(imgLaras, -imgLaras.width/2 + 15, -imgLaras.height/2 - recoilOffset);
+
+                ctx.restore();
+            }
+
+            // Gambar Peluru
+            if (imgPeluru.complete && imgPeluru.naturalWidth > 0) {
+                for (let b of bullets) {
+                    ctx.save();
+                    ctx.translate(b.x, b.y);
+                    ctx.rotate(b.angle);
+                    // Perkecil peluru (skala 0.3 dari ukuran asli)
+                    const scale = 0.3;
+                    ctx.drawImage(imgPeluru, -imgPeluru.width*scale/2, -imgPeluru.height*scale/2, imgPeluru.width*scale, imgPeluru.height*scale);
+                    ctx.restore();
+                }
+            }
+
+            requestAnimationFrame(loop);
+        }
+
+        loop();
+    </script>
+</body>
+</html>
