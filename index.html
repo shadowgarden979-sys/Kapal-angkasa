@@ -14,12 +14,15 @@
     </style>
 </head>
 <body>
-    <div id="instruksi">Geser Jari = Putar Laras | Tap Layar = Tembak</div>
+    <div id="instruksi">Geser Jari = Putar | Tap Layar = Tembak Beruntun</div>
     <canvas id="gameCanvas"></canvas>
+
+    <audio id="sfxTembak" src="tembakan.mp3" preload="auto"></audio>
 
     <script>
         const canvas = document.getElementById('gameCanvas');
         const ctx = canvas.getContext('2d');
+        const sfxTembak = document.getElementById('sfxTembak');
 
         function resize() {
             canvas.width = window.innerWidth;
@@ -29,85 +32,83 @@
         resize();
 
         // ==========================================
-        // MEMANGGIL FILE GAMBAR DARI GITHUB
+        // MEMANGGAL FILE GAMBAR DARI GITHUB
         // ==========================================
         const imgAlas = new Image(); imgAlas.src = "alas.png";
-const imgRumah = new Image(); imgRumah.src = "rumah-laras.png";
-const imgLaras = new Image(); imgLaras.src = "laras.png";
-const imgPeluru = new Image(); imgPeluru.src = "peluru.png";
-        const imgKilatan1 = new Image(); imgKilatan1.src = "kilatan1.png";
-        const imgKilatan2 = new Image(); imgKilatan2.src = "kilatan2.png";
+        const imgRumah = new Image(); imgRumah.src = "rumah-laras.png";
+        const imgLaras = new Image(); imgLaras.src = "laras.png";
+        const imgPeluru = new Image(); imgPeluru.src = "peluru.png";
 
         // ==========================================
-        // SUARA TEMBAKAN (diputar saat menembak)
+        // PENGATURAN KALIBRASI (SILAKAN OTAK-ATIK)
         // ==========================================
-        const sndTembak = new Audio("tembakan.mp3");
-        sndTembak.volume = 0.5;
-        function playTembakan() {
-            try {
-                sndTembak.currentTime = 0; // restart jika masih berbunyi
-                sndTembak.play().catch(() => {});
-            } catch (e) {}
-        }
+        // Jarak antar laras (DIPERKECIL menjadi 18 agar lebih rapat)
+        const JARAK_LARAS = 21; 
+        
+        // Geser Laras ke atas/bawah relatif terhadap rumah.
+        const LARAS_OFFSET_Y = -115; 
+        
+        // Posisi Pivot (Sudah Gacor, jangan diubah)
+        const PIVOT_Y_OFFSET = 22; 
 
-        let currentAngle = -Math.PI / 2; // mulai menghadap atas
+        // Crop ukuran rumah
+        const RUMAH_W = 98, RUMAH_H = 109;   
+
+        // ==========================================
+        let currentAngle = -Math.PI / 2; 
         let targetAngle = -Math.PI / 2;
-        let recoil = 0;
+        
+        let recoilKiri = 0;
+        let recoilTengah = 0;
+        let recoilKanan = 0;
+        let giliranTembak = 0; 
+
         let bullets = [];
-
-        // ==========================================
-        // MUZZLE FLASH: animasi 2 frame, 70ms per frame (total 140ms)
-        // ==========================================
-        const FLASH_FRAME_MS = 70;
-        const FLASH_TOTAL_MS = 140;
-        let flashes = []; // { x, y, angle, startTime }
-
-        // ==========================================
-        // UKURAN & POSISI ASET (hasil kalibrasi PNG)
-        // ==========================================
-        const RUMAH_W = 98, RUMAH_H = 109;   // rumah kubah: bagian bawah gambar, pusat rotasi di tengahnya
-        const PIVOT_Y = 130.5 - RUMAH_H / 2; // pivot rumah relatif pusat canvas (+13px) agar laras tertutup atap
-        const LARAS_TIP = 130.5;             // panjang laras dari sumbu rotasi ke ujung (atas)
-        const PELURU_W = 7;                  // lebar peluru dirender (harus < lebar ujung laras ~10px)
-        const PELURU_H = 24;                 // tinggi/panjang peluru dirender
+        const PELURU_W = 7;                  
+        const PELURU_H = 24;                 
 
         function handleMove(e) {
             const rect = canvas.getBoundingClientRect();
             const clientX = e.touches ? e.touches[0].clientX : e.clientX;
             const clientY = e.touches ? e.touches[0].clientY : e.clientY;
-
             const mouseX = clientX - rect.left;
             const mouseY = clientY - rect.top;
-
             const centerX = canvas.width / 2;
             const centerY = canvas.height / 2;
-
             targetAngle = Math.atan2(mouseY - centerY, mouseX - centerX);
         }
 
         function handleShoot(e) {
             handleMove(e);
+            sfxTembak.currentTime = 0;
+            sfxTembak.play().catch(err => {});
 
-            const centerX = canvas.width / 2;
-            const centerY = canvas.height / 2 + PIVOT_Y; // sumbu rotasi meriam
+            const cx = canvas.width / 2;
+            const cy = canvas.height / 2 + PIVOT_Y_OFFSET; 
+            
+            let offsetX = 0;
+            if (giliranTembak === 0) { offsetX = -JARAK_LARAS; recoilKiri = 15; }
+            if (giliranTembak === 1) { offsetX = 0; recoilTengah = 15; }
+            if (giliranTembak === 2) { offsetX = JARAK_LARAS; recoilKanan = 15; }
 
-            // peluru muncul sedikit di dalam ujung laras agar tidak terlihat "melompat"
-            const spawnDist = LARAS_TIP - 10;
-            const tipX = centerX + Math.cos(currentAngle) * spawnDist;
-            const tipY = centerY + Math.sin(currentAngle) * spawnDist;
+            // Hitung posisi ujung laras
+            const localTipX = offsetX;
+            const localTipY = LARAS_OFFSET_Y - 100; 
+            
+            const cos = Math.cos(currentAngle + Math.PI / 2);
+            const sin = Math.sin(currentAngle + Math.PI / 2);
+            
+            const tipX = cx + (localTipX * cos - localTipY * sin);
+            const tipY = cy + (localTipX * sin + localTipY * cos);
 
             bullets.push({
                 x: tipX, y: tipY,
-                vx: Math.cos(currentAngle) * 10,
-                vy: Math.sin(currentAngle) * 10,
+                vx: Math.cos(currentAngle) * 15,
+                vy: Math.sin(currentAngle) * 15,
                 angle: currentAngle
             });
 
-            // daftarkan muzzle flash di ujung laras (tepat sebelum peluru keluar)
-            flashes.push({ x: tipX, y: tipY, angle: currentAngle, startTime: performance.now() });
-
-            recoil = 15;
-            playTembakan();
+            giliranTembak = (giliranTembak + 1) % 3;
         }
 
         canvas.addEventListener('pointermove', handleMove);
@@ -119,13 +120,9 @@ const imgPeluru = new Image(); imgPeluru.src = "peluru.png";
             while (diff < -Math.PI) diff += Math.PI * 2;
             currentAngle += diff * 0.1;
 
-            if (recoil > 0) recoil -= 1;
-
-            // bersihkan flash yang sudah lewat total durasinya (140ms)
-            const now = performance.now();
-            for (let i = flashes.length - 1; i >= 0; i--) {
-                if (now - flashes[i].startTime >= FLASH_TOTAL_MS) flashes.splice(i, 1);
-            }
+            if (recoilKiri > 0) recoilKiri -= 1;
+            if (recoilTengah > 0) recoilTengah -= 1;
+            if (recoilKanan > 0) recoilKanan -= 1;
 
             for (let i = bullets.length - 1; i >= 0; i--) {
                 bullets[i].x += bullets[i].vx;
@@ -140,59 +137,46 @@ const imgPeluru = new Image(); imgPeluru.src = "peluru.png";
 
             const cx = canvas.width / 2;
             const cy = canvas.height / 2;
-            // sumbu rotasi meriam (pusat rumah kubah)
-            const px = cx;
-            const py = cy + PIVOT_Y;
 
+            // 1. GAMBAR ALAS
             if (imgAlas.complete && imgAlas.naturalWidth > 0) {
                 ctx.drawImage(imgAlas, cx - imgAlas.width/2, cy - imgAlas.height/2);
             }
 
+            // 2. GAMBAR LARAS & RUMAH
+            ctx.save();
+            ctx.translate(cx, cy + PIVOT_Y_OFFSET); 
+            ctx.rotate(currentAngle + Math.PI / 2); 
+
             if (imgLaras.complete && imgLaras.naturalWidth > 0) {
-                ctx.save();
-                ctx.translate(px, py);
-                ctx.rotate(currentAngle + Math.PI / 2); // gambar laras aslinya menghadap atas
-
-                // RECOIL: nilai positif = geser ke bawah pada sumbu lokal = mundur ke dalam rumah
-                const recoilOffset = recoil;
-
-                ctx.drawImage(imgLaras, -imgLaras.width/2 - 15, -130.5 + recoilOffset);
-                ctx.drawImage(imgLaras, -imgLaras.width/2,      -130.5 + recoilOffset);
-                ctx.drawImage(imgLaras, -imgLaras.width/2 + 15, -130.5 + recoilOffset);
-
-                ctx.restore();
+                ctx.drawImage(imgLaras, -imgLaras.width/2 - JARAK_LARAS, LARAS_OFFSET_Y + recoilKiri);
+                ctx.drawImage(imgLaras, -imgLaras.width/2, LARAS_OFFSET_Y + recoilTengah);
+                ctx.drawImage(imgLaras, -imgLaras.width/2 + JARAK_LARAS, LARAS_OFFSET_Y + recoilKanan);
             }
 
             if (imgRumah.complete && imgRumah.naturalWidth > 0) {
-                // RUMAH LARAS IKUT BERPUTAR mengikuti arah tembak
-                ctx.save();
-                ctx.translate(px, py);
-                ctx.rotate(currentAngle + Math.PI / 2);
-                // crop 98x109 px dari bagian bawah gambar asli (baris 76..184)
                 ctx.drawImage(imgRumah, 0, 76, RUMAH_W, RUMAH_H,
                               -RUMAH_W/2, -RUMAH_H/2, RUMAH_W, RUMAH_H);
-                ctx.restore();
             }
+            ctx.restore();
 
+            // 3. GAMBAR PELURU
             if (imgPeluru.complete && imgPeluru.naturalWidth > 0) {
                 for (let b of bullets) {
                     ctx.save();
                     ctx.translate(b.x, b.y);
-                    ctx.rotate(b.angle + Math.PI / 2); // gambar peluru aslinya menghadap atas
+                    ctx.rotate(b.angle + Math.PI / 2); 
                     ctx.drawImage(imgPeluru, -PELURU_W/2, -PELURU_H/2, PELURU_W, PELURU_H);
+                    
+                    ctx.beginPath();
+                    ctx.moveTo(0, 0);
+                    ctx.lineTo(0, 30);
+                    ctx.strokeStyle = 'rgba(253, 224, 71, 0.5)';
+                    ctx.lineWidth = 3;
+                    ctx.stroke();
+                    
                     ctx.restore();
                 }
-            }
-
-            // GAMBAR MUZZLE FLASH di ujung laras (paling atas, setelah peluru)
-            for (let f of flashes) {
-                const frameImg = (now - f.startTime < FLASH_FRAME_MS) ? imgKilatan1 : imgKilatan2;
-                if (!(frameImg.complete && frameImg.naturalWidth > 0)) continue;
-                ctx.save();
-                ctx.translate(f.x, f.y);
-                ctx.rotate(f.angle + Math.PI / 2); // gambar flash asli menghadap atas
-                ctx.drawImage(frameImg, -frameImg.width/2, -frameImg.height * 0.6);
-                ctx.restore();
             }
 
             requestAnimationFrame(loop);
