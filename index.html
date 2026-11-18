@@ -40,17 +40,17 @@
         const imgPeluru = new Image(); imgPeluru.src = "peluru.png";
 
         // ==========================================
-        // PENGATURAN KALIBRASI (BISA KAMU OTAK-ATIK)
+        // PENGATURAN KALIBRASI (SILAKAN OTAK-ATIK)
         // ==========================================
-        // Jarak antar laras (diperlebar 1px menjadi 23 untuk menutup celah)
-        const JARAK_LARAS = 23; 
+        // Jarak antar laras (dilebarkan dari 23 menjadi 25)
+        const JARAK_LARAS = 25; 
         
-        // Geser Laras ke atas/bawah. Perkecil angkanya (misal -120) jika laras kurang masuk.
+        // Geser Laras ke atas/bawah relatif terhadap rumah.
         const LARAS_OFFSET_Y = -115; 
         
-        // Posisi Pivot (Titik Putar). Angka positif = poros turun ke bawah.
-        // Ubah ini jika poros rotasi masih terasa terlalu tinggi.
-        const PIVOT_Y_OFFSET = 15; 
+        // Posisi Pivot (Titik Putar & Posisi Rumah). 
+        // Diperbesar ke 22 agar rumah mundur ke belakang (turun).
+        const PIVOT_Y_OFFSET = 22; 
 
         // Crop ukuran rumah (sesuai gambar asli)
         const RUMAH_W = 98, RUMAH_H = 109;   
@@ -94,7 +94,6 @@
 
             // Hitung posisi ujung laras
             const localTipX = offsetX;
-            // Ujung laras berada di LARAS_OFFSET_Y - panjang laras
             const localTipY = LARAS_OFFSET_Y - 100; 
             
             const cos = Math.cos(currentAngle + Math.PI / 2);
@@ -147,21 +146,17 @@
 
             // 2. GAMBAR LARAS & RUMAH (Berputar pada poros yang sama)
             ctx.save();
-            // Pindahkan titik (0,0) ke poros rotasi yang baru
             ctx.translate(cx, cy + PIVOT_Y_OFFSET); 
             ctx.rotate(currentAngle + Math.PI / 2); 
 
             // Gambar Laras
             if (imgLaras.complete && imgLaras.naturalWidth > 0) {
-                // Laras Kiri
                 ctx.drawImage(imgLaras, -imgLaras.width/2 - JARAK_LARAS, LARAS_OFFSET_Y + recoilKiri);
-                // Laras Tengah
                 ctx.drawImage(imgLaras, -imgLaras.width/2, LARAS_OFFSET_Y + recoilTengah);
-                // Laras Kanan
                 ctx.drawImage(imgLaras, -imgLaras.width/2 + JARAK_LARAS, LARAS_OFFSET_Y + recoilKanan);
             }
 
-            // Gambar Rumah Meriam (Tepat di titik 0,0 poros)
+            // Gambar Rumah Meriam
             if (imgRumah.complete && imgRumah.naturalWidth > 0) {
                 ctx.drawImage(imgRumah, 0, 76, RUMAH_W, RUMAH_H,
                               -RUMAH_W/2, -RUMAH_H/2, RUMAH_W, RUMAH_H);
