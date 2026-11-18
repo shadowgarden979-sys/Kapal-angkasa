@@ -51,7 +51,8 @@
         const N = PIX * PIX;
         const ZOOM = 2;
         const SEL = PIX * ZOOM;
-        const JARAK_SPAWN_SEL = 5;
+        const JARAK_SPAWN_SEL = 5;   // jarak sel pertama di depan moncong, dalam jumlah sel
+        const MAKS_TUMPUK = 4;       // berapa sel boleh ditumpuk ke depan dalam satu garis bidik
 
         const TARGET_X = 4 * SEL;
         const TARGET_Y = -6 * SEL;
@@ -109,7 +110,7 @@
         // STATUS
         // ==========================================
         let camX = 0, camY = 0;
-        let skala = 1;                  // zoom tampilan (layar per piksel dunia)
+        let skala = 1;
         let currentAngle = -Math.PI / 2;
         let targetAngle = -Math.PI / 2;
 
@@ -154,7 +155,6 @@
                 const r = d[i * 4], g = d[i * 4 + 1], b = d[i * 4 + 2];
                 warnaDasar.push(`rgb(${r},${g},${b})`);
                 warnaGosong.push(`rgb(${(r * 0.55) | 0},${(g * 0.55) | 0},${(b * 0.55) | 0})`);
-                // Tingkat 1: warna dasar dicampur sedikit merah tua (30%)
                 const mr = Math.round(r * 0.7 + 127 * 0.3);
                 const mg = Math.round(g * 0.7 + 29 * 0.3);
                 const mb = Math.round(b * 0.7 + 29 * 0.3);
@@ -295,16 +295,25 @@
             fireCooldown = FIRE_INTERVAL;
         }
 
+        // Sel baru ditaruh di depan moncong. Kalau posisinya sudah ada sel,
+        // sel ditaruh satu langkah lebih jauh, sampai batas MAKS_TUMPUK.
+        // Hasilnya: menekan SEL berulang kali menumpuk sel ke depan, membentuk dinding.
         function spawnSel() {
             if (!warnaDasar) return;
             const m = muzzleWorld(0, LARAS_OFFSET_Y);
-            const jarak = JARAK_SPAWN_SEL * SEL;
-            const tx = m.x + Math.cos(currentAngle) * jarak;
-            const ty = m.y + Math.sin(currentAngle) * jarak;
-            const sx = Math.floor(tx / SEL) * SEL;
-            const sy = Math.floor(ty / SEL) * SEL;
-            if (sels.some(c => c.x === sx && c.y === sy)) return;
-            sels.push(buatSel(sx, sy));
+            const cs = Math.cos(currentAngle), sn = Math.sin(currentAngle);
+
+            for (let k = 0; k < MAKS_TUMPUK; k++) {
+                const jarak = (JARAK_SPAWN_SEL + k) * SEL;
+                const tx = m.x + cs * jarak;
+                const ty = m.y + sn * jarak;
+                const sx = Math.floor(tx / SEL) * SEL;
+                const sy = Math.floor(ty / SEL) * SEL;
+                if (!sels.some(c => c.x === sx && c.y === sy)) {
+                    sels.push(buatSel(sx, sy));
+                    return;
+                }
+            }
         }
 
         // ==========================================
@@ -549,7 +558,7 @@
             const size = SEL * skala;
             if (sx + size < 0 || sy + size < 0 || sx > canvas.width || sy > canvas.height) return;
 
-            const P = ZOOM * skala;   // ukuran satu piksel simulasi di layar
+            const P = ZOOM * skala;
             for (let ly = 0; ly < PIX; ly++) {
                 for (let lx = 0; lx < PIX; lx++) {
                     const idx = ly * PIX + lx;
@@ -691,7 +700,6 @@
             const cx = canvas.width / 2;
             const cy = canvas.height / 2;
 
-            // Alas, laras, dan rumah: ikut zoom, tetap di tengah layar
             ctx.save();
             ctx.translate(cx, cy);
             ctx.scale(skala, skala);
@@ -715,7 +723,6 @@
             }
             ctx.restore();
 
-            // Kilatan moncong
             for (const f of effects) {
                 if (!f.img.complete || f.img.naturalWidth === 0) continue;
                 const sx = toScreenX(f.x), sy = toScreenY(f.y);
@@ -730,7 +737,6 @@
                 ctx.restore();
             }
 
-            // Peluru: makin gepeng saat kecepatannya tinggal sedikit
             if (imgPeluru.complete && imgPeluru.naturalWidth > 0) {
                 for (const b of bullets) {
                     const gep = Math.max(0, Math.min(1,
