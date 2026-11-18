@@ -53,10 +53,14 @@
         // ==========================================
         // PENGATURAN KALIBRASI (SILAKAN OTAK-ATIK)
         // ==========================================
-        const JARAK_LARAS = 21;      // jarak antar laras
-        const LARAS_OFFSET_Y = -115; // geser laras relatif terhadap rumah
-        const PIVOT_Y_OFFSET = 22;   // posisi pivot
+        const JARAK_LARAS = 21;            // jarak antar laras
+        const LARAS_OFFSET_Y = -115;       // geser laras relatif terhadap rumah
+        const PIVOT_Y_OFFSET = 22;         // posisi pivot
         const RUMAH_W = 98, RUMAH_H = 109; // crop ukuran rumah
+
+        // Recoil
+        const RECOIL_MAX = 50;       // jarak mundur laras saat menembak (piksel)
+        const RECOIL_DURASI = 0.35;  // detik, waktu laras kembali ke posisi awal
 
         // Peluru
         const KECEPATAN_PELURU = 800; // piksel per detik (sesuai Yamato)
@@ -64,13 +68,14 @@
         const PELURU_H = 24;
 
         // Target
-        const TARGET_SIZE = 48;
+        const TARGET_SIZE = 64;       // 2×2 sel (1 sel = 32 piksel di layar)
         const TARGET_OFFSET_X = 150;  // jarak target dari pusat layar
         const TARGET_OFFSET_Y = -150;
 
         // Kilatan
         const KILATAN_SKALA = 0.25;   // ukuran kilatan relatif terhadap aslinya
         const KILATAN_DURASI = 0.06;  // detik
+        const KILATAN_MAJU = 0.5;     // seberapa jauh pangkal kilatan digeser ke depan moncong
 
         // ==========================================
         let currentAngle = -Math.PI / 2;
@@ -129,13 +134,13 @@
             const cy = canvas.height / 2 + PIVOT_Y_OFFSET;
 
             let offsetX = 0;
-            if (giliranTembak === 0) { offsetX = -JARAK_LARAS; recoilKiri = 15; }
-            if (giliranTembak === 1) { offsetX = 0; recoilTengah = 15; }
-            if (giliranTembak === 2) { offsetX = JARAK_LARAS; recoilKanan = 15; }
+            if (giliranTembak === 0) { offsetX = -JARAK_LARAS; recoilKiri = RECOIL_MAX; }
+            if (giliranTembak === 1) { offsetX = 0; recoilTengah = RECOIL_MAX; }
+            if (giliranTembak === 2) { offsetX = JARAK_LARAS; recoilKanan = RECOIL_MAX; }
 
-            // Posisi ujung laras
+            // Ujung laras depan (posisi saat diam), tidak ikut mundur
             const localTipX = offsetX;
-            const localTipY = LARAS_OFFSET_Y - 100;
+            const localTipY = LARAS_OFFSET_Y;
 
             const cos = Math.cos(currentAngle + Math.PI / 2);
             const sin = Math.sin(currentAngle + Math.PI / 2);
@@ -143,7 +148,6 @@
             const tipX = cx + (localTipX * cos - localTipY * sin);
             const tipY = cy + (localTipX * sin + localTipY * cos);
 
-            // Peluru (kecepatan dalam piksel per detik)
             bullets.push({
                 x: tipX, y: tipY,
                 vx: Math.cos(currentAngle) * KECEPATAN_PELURU,
@@ -151,7 +155,6 @@
                 angle: currentAngle
             });
 
-            // Kilatan: kilatan2 untuk laras kanan, kilatan1 untuk yang lain
             const imgKilatan = (giliranTembak === 2) ? imgKilatan2 : imgKilatan1;
             effects.push({
                 x: tipX, y: tipY,
@@ -185,17 +188,24 @@
         }
 
         // ==========================================
-        // GAMBAR TARGET
+        // GAMBAR TARGET (tekstur sel)
         // ==========================================
         function gambarTarget() {
+            if (!imgSel.complete || imgSel.naturalWidth === 0) return;
             const t = getTarget();
-            ctx.fillStyle = hitTimer > 0 ? '#f87171' : '#4ade80';
-            ctx.globalAlpha = 0.35;
-            ctx.fillRect(t.x, t.y, t.w, t.h);
-            ctx.globalAlpha = 1;
-            ctx.strokeStyle = hitTimer > 0 ? '#f87171' : '#4ade80';
-            ctx.lineWidth = 2;
-            ctx.strokeRect(t.x, t.y, t.w, t.h);
+            const ukuranSel = SEL_PX * ZOOM;
+
+            for (let y = t.y; y < t.y + t.h; y += ukuranSel) {
+                for (let x = t.x; x < t.x + t.w; x += ukuranSel) {
+                    ctx.drawImage(imgSel, x, y, ukuranSel, ukuranSel);
+                }
+            }
+
+            // Kilatan merah saat kena
+            if (hitTimer > 0) {
+                ctx.fillStyle = 'rgba(248, 113, 113, 0.5)';
+                ctx.fillRect(t.x, t.y, t.w, t.h);
+            }
         }
 
         // ==========================================
@@ -214,8 +224,8 @@
             while (diff < -Math.PI) diff += Math.PI * 2;
             currentAngle += diff * (1 - Math.pow(0.9, dt * 60));
 
-            // Recoil memudar
-            const laju = 900 * dt; // setara 15 unit per frame di 60 FPS
+            // Recoil memudar dalam RECOIL_DURASI detik
+            const laju = RECOIL_MAX / RECOIL_DURASI * dt;
             recoilKiri = Math.max(0, recoilKiri - laju);
             recoilTengah = Math.max(0, recoilTengah - laju);
             recoilKanan = Math.max(0, recoilKanan - laju);
@@ -286,7 +296,11 @@
             for (const f of effects) {
                 if (!f.img.complete || f.img.naturalWidth === 0) continue;
                 ctx.save();
-                ctx.translate(f.x, f.y);
+                const maju = f.img.naturalHeight * KILATAN_SKALA * KILATAN_MAJU;
+                ctx.translate(
+                    f.x + Math.cos(f.angle) * maju,
+                    f.y + Math.sin(f.angle) * maju
+                );
                 ctx.rotate(f.angle + Math.PI / 2);
                 ctx.globalAlpha = Math.max(0, f.life / f.total);
                 const w = f.img.naturalWidth * KILATAN_SKALA;
