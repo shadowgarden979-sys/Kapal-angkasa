@@ -27,45 +27,53 @@
         function resize() {
             canvas.width = window.innerWidth;
             canvas.height = window.innerHeight;
+            ctx.imageSmoothingEnabled = false; // pixel art tetap tajam
         }
         window.addEventListener('resize', resize);
         resize();
 
         // ==========================================
-        // MEMANGGAL FILE GAMBAR DARI GITHUB
+        // MEMANGGIL FILE GAMBAR
         // ==========================================
         const imgAlas = new Image(); imgAlas.src = "alas.png";
         const imgRumah = new Image(); imgRumah.src = "rumah-laras.png";
         const imgLaras = new Image(); imgLaras.src = "laras.png";
         const imgPeluru = new Image(); imgPeluru.src = "peluru.png";
+        const imgSel = new Image(); imgSel.src = "sel1.png";
+
+        // ==========================================
+        // PENGATURAN GRID
+        // ==========================================
+        const SEL_PX = 16;  // ukuran sel asli
+        const ZOOM = 2;     // perbesaran supaya terlihat di HP
 
         // ==========================================
         // PENGATURAN KALIBRASI (SILAKAN OTAK-ATIK)
         // ==========================================
-        // Jarak antar laras (DIPERKECIL menjadi 18 agar lebih rapat)
-        const JARAK_LARAS = 21; 
-        
-        // Geser Laras ke atas/bawah relatif terhadap rumah.
-        const LARAS_OFFSET_Y = -115; 
-        
-        // Posisi Pivot (Sudah Gacor, jangan diubah)
-        const PIVOT_Y_OFFSET = 22; 
+        // Jarak antar laras
+        const JARAK_LARAS = 21;
+
+        // Geser laras ke atas/bawah relatif terhadap rumah
+        const LARAS_OFFSET_Y = -115;
+
+        // Posisi pivot
+        const PIVOT_Y_OFFSET = 22;
 
         // Crop ukuran rumah
-        const RUMAH_W = 98, RUMAH_H = 109;   
+        const RUMAH_W = 98, RUMAH_H = 109;
 
         // ==========================================
-        let currentAngle = -Math.PI / 2; 
+        let currentAngle = -Math.PI / 2;
         let targetAngle = -Math.PI / 2;
-        
+
         let recoilKiri = 0;
         let recoilTengah = 0;
         let recoilKanan = 0;
-        let giliranTembak = 0; 
+        let giliranTembak = 0;
 
         let bullets = [];
-        const PELURU_W = 7;                  
-        const PELURU_H = 24;                 
+        const PELURU_W = 7;
+        const PELURU_H = 24;
 
         function handleMove(e) {
             const rect = canvas.getBoundingClientRect();
@@ -84,8 +92,8 @@
             sfxTembak.play().catch(err => {});
 
             const cx = canvas.width / 2;
-            const cy = canvas.height / 2 + PIVOT_Y_OFFSET; 
-            
+            const cy = canvas.height / 2 + PIVOT_Y_OFFSET;
+
             let offsetX = 0;
             if (giliranTembak === 0) { offsetX = -JARAK_LARAS; recoilKiri = 15; }
             if (giliranTembak === 1) { offsetX = 0; recoilTengah = 15; }
@@ -93,11 +101,11 @@
 
             // Hitung posisi ujung laras
             const localTipX = offsetX;
-            const localTipY = LARAS_OFFSET_Y - 100; 
-            
+            const localTipY = LARAS_OFFSET_Y - 100;
+
             const cos = Math.cos(currentAngle + Math.PI / 2);
             const sin = Math.sin(currentAngle + Math.PI / 2);
-            
+
             const tipX = cx + (localTipX * cos - localTipY * sin);
             const tipY = cy + (localTipX * sin + localTipY * cos);
 
@@ -113,6 +121,23 @@
 
         canvas.addEventListener('pointermove', handleMove);
         canvas.addEventListener('pointerdown', handleShoot);
+
+        // ==========================================
+        // GAMBAR GRID SEL
+        // ==========================================
+        function gambarGrid() {
+            if (!imgSel.complete || imgSel.naturalWidth === 0) return;
+
+            const ukuran = SEL_PX * ZOOM;
+            const kolom = Math.ceil(canvas.width / ukuran) + 1;
+            const baris = Math.ceil(canvas.height / ukuran) + 1;
+
+            for (let y = 0; y < baris; y++) {
+                for (let x = 0; x < kolom; x++) {
+                    ctx.drawImage(imgSel, x * ukuran, y * ukuran, ukuran, ukuran);
+                }
+            }
+        }
 
         function loop() {
             let diff = targetAngle - currentAngle;
@@ -138,6 +163,9 @@
             const cx = canvas.width / 2;
             const cy = canvas.height / 2;
 
+            // 0. GAMBAR GRID SEL (paling belakang)
+            gambarGrid();
+
             // 1. GAMBAR ALAS
             if (imgAlas.complete && imgAlas.naturalWidth > 0) {
                 ctx.drawImage(imgAlas, cx - imgAlas.width/2, cy - imgAlas.height/2);
@@ -145,8 +173,8 @@
 
             // 2. GAMBAR LARAS & RUMAH
             ctx.save();
-            ctx.translate(cx, cy + PIVOT_Y_OFFSET); 
-            ctx.rotate(currentAngle + Math.PI / 2); 
+            ctx.translate(cx, cy + PIVOT_Y_OFFSET);
+            ctx.rotate(currentAngle + Math.PI / 2);
 
             if (imgLaras.complete && imgLaras.naturalWidth > 0) {
                 ctx.drawImage(imgLaras, -imgLaras.width/2 - JARAK_LARAS, LARAS_OFFSET_Y + recoilKiri);
@@ -165,16 +193,16 @@
                 for (let b of bullets) {
                     ctx.save();
                     ctx.translate(b.x, b.y);
-                    ctx.rotate(b.angle + Math.PI / 2); 
+                    ctx.rotate(b.angle + Math.PI / 2);
                     ctx.drawImage(imgPeluru, -PELURU_W/2, -PELURU_H/2, PELURU_W, PELURU_H);
-                    
+
                     ctx.beginPath();
                     ctx.moveTo(0, 0);
                     ctx.lineTo(0, 30);
                     ctx.strokeStyle = 'rgba(253, 224, 71, 0.5)';
                     ctx.lineWidth = 3;
                     ctx.stroke();
-                    
+
                     ctx.restore();
                 }
             }
