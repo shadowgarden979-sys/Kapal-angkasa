@@ -1,0 +1,617 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Tes Meriam</title>
+    <style>
+        body, html { margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden; background-color: #07080d; }
+        canvas { display: block; touch-action: none; }
+        #instruksi {
+            position: absolute; top: 10px; width: 100%; text-align: center;
+            color: #0f0; font-family: monospace; font-size: 14px; pointer-events: none;
+            background: rgba(0, 0, 0, 0.6); padding: 4px 0;
+        }
+    </style>
+</head>
+<body>
+    <div id="instruksi">Satu jari = putar | Dua jari = geser layar | Kanan bawah = tembak | Kiri bawah = sel</div>
+    <canvas id="gameCanvas"></canvas>
+
+    <audio id="sfxTembak" src="tembakan.mp3" preload="auto"></audio>
+
+    <script>
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+        const sfxTembak = document.getElementById('sfxTembak');
+
+        function resize() {
+            canvas.width = window.innerWidth;
+            canvas.height = window.innerHeight;
+            ctx.imageSmoothingEnabled = false;
+        }
+        window.addEventListener('resize', resize);
+        resize();
+
+        // ==========================================
+        // FILE GAMBAR
+        // ==========================================
+        const imgAlas = new Image(); imgAlas.src = "alas.png";
+        const imgRumah = new Image(); imgRumah.src = "rumah-laras.png";
+        const imgLaras = new Image(); imgLaras.src = "laras.png";
+        const imgPeluru = new Image(); imgPeluru.src = "peluru.png";
+        const imgSel = new Image(); imgSel.src = "sel1.png";
+        const imgKilatan1 = new Image(); imgKilatan1.src = "kilatan1.png";
+        const imgKilatan2 = new Image(); imgKilatan2.src = "kilatan2.png";
+
+        // ==========================================
+        // PENGATURAN SEL
+        // ==========================================
+        const PIX = 16;             // ukuran sel dalam piksel simulasi
+        const ZOOM = 2;             // perbesaran tampilan
+        const SEL = PIX * ZOOM;     // ukuran satu sel di dunia (satuan layar)
+        const JARAK_SPAWN_SEL = 5;  // jarak sel baru di depan moncong, dalam jumlah sel
+
+        // Target awal: 2×2 sel, di kanan atas dari turret
+        const TARGET_X = 4 * SEL;
+        const TARGET_Y = -6 * SEL;
+
+        // Radar (kotak pendeteksi di sekitar sel)
+        const RADAR_MARGIN = SEL;
+        const RADAR_DURASI = 0.3;
+        const RADAR_TAMPIL = true;
+
+        // Fisika tabrakan peluru
+        const HIT_AWAL_FAKTOR = 0.65;   // kecepatan tersisa saat tabrakan pertama
+        const PENETRASI_FAKTOR = 0.99;  // kecepatan dikali ini tiap piksel yang ditembus
+        const KECEPATAN_MIN = 40;       // di bawah ini peluru berhenti
+        const PANAS_CHANCE = 0.5;       // peluang piksel tepi jadi panas (sisanya menguap)
+
+        // ==========================================
+        // PENGATURAN KALIBRASI (SILAKAN OTAK-ATIK)
+        // ==========================================
+        const JARAK_LARAS = 21;
+        const LARAS_OFFSET_Y = -115;
+        const PIVOT_Y_OFFSET = 22;
+        const RUMAH_W = 98, RUMAH_H = 109;
+
+        const RECOIL_MAX = 50;
+        const RECOIL_DURASI = 0.35;
+
+        const FIRE_INTERVAL = 0.15;
+
+        const KECEPATAN_PELURU = 800;
+        const PELURU_W = 7;
+        const PELURU_H = 24;
+
+        const KILATAN_SKALA = 0.25;
+        const KILATAN_DURASI = 0.06;
+        const KILATAN_MAJU = 0.5;
+
+        const TOMBOL_R = 48;
+
+        // ==========================================
+        // STATUS
+        // ==========================================
+        let camX = 0, camY = 0;
+        let currentAngle = -Math.PI / 2;
+        let targetAngle = -Math.PI / 2;
+
+        let recoilKiri = 0, recoilTengah = 0, recoilKanan = 0;
+        let giliranTembak = 0;
+        let fireCooldown = 0;
+
+        let bullets = [];
+        let effects = [];
+        let sels = [];
+        let lastShot = null;     // hasil tembakan terakhir untuk panel
+
+        let warnaDasar = null;
+        let sudahInit = false;
+
+        const pointers = new Map();
+        let lastMid = null;
+
+        // ==========================================
+        // SEL: DATA DAN PEMBUATAN
+        // ==========================================
+        // pix[i]: 0 = kosong, 1 = padat, 2 = panas
+        function siapkanWarna() {
+            const oc = document.createElement('canvas');
+            oc.width = PIX; oc.height = PIX;
+            const octx = oc.getContext('2d');
+            warnaDasar = [];
+            if (imgSel.naturalWidth === 0) {
+                for (let i = 0; i < PIX * PIX; i++) warnaDasar.push('#888');
+                return;
+            }
+            octx.drawImage(imgSel, 0, 0, PIX, PIX);
+            const d = octx.getImageData(0, 0, PIX, PIX).data;
+            for (let i = 0; i < PIX * PIX; i++) {
+                warnaDasar.push(`rgb(${d[i*4]},${d[i*4+1]},${d[i*4+2]})`);
+            }
+        }
+
+        function buatSel(x, y) {
+            return {
+                x, y,
+                pix: new Uint8Array(PIX * PIX).fill(1),
+                warna: warnaDasar,
+                panas: new Array(PIX * PIX),
+                sisa: PIX * PIX,
+                rusak: false,
+                radar: 0,
+                kena: 0
+            };
+        }
+
+        function initSiap() {
+            if (!imgSel.complete) return false;
+            if (!warnaDasar) siapkanWarna();
+            if (!sudahInit) {
+                sudahInit = true;
+                for (let j = 0; j < 2; j++) {
+                    for (let i = 0; i < 2; i++) {
+                        sels.push(buatSel(TARGET_X + i * SEL, TARGET_Y + j * SEL));
+                    }
+                }
+            }
+            return true;
+        }
+
+        function hapusPiksel(c, idx) {
+            if (c.pix[idx] === 0) return;
+            c.pix[idx] = 0;
+            c.sisa--;
+            c.rusak = true;
+        }
+
+        function jadikanPanas(c, idx) {
+            if (c.pix[idx] === 0) return;
+            c.pix[idx] = 2;
+            c.panas[idx] = ['#fb923c', '#facc15', '#fef3c7'][Math.floor(Math.random() * 3)];
+            c.rusak = true;
+        }
+
+        function cariSel(x, y) {
+            for (const c of sels) {
+                if (x >= c.x && x < c.x + SEL && y >= c.y && y < c.y + SEL) return c;
+            }
+            return null;
+        }
+
+        // ==========================================
+        // KOORDINAT
+        // ==========================================
+        function pivotWorld() {
+            return { x: camX, y: camY + PIVOT_Y_OFFSET };
+        }
+
+        function muzzleWorld(ox, oy) {
+            const p = pivotWorld();
+            const c = Math.cos(currentAngle + Math.PI / 2);
+            const s = Math.sin(currentAngle + Math.PI / 2);
+            return { x: p.x + (ox * c - oy * s), y: p.y + (ox * s + oy * c) };
+        }
+
+        function toScreenX(x) { return x - camX + canvas.width / 2; }
+        function toScreenY(y) { return y - camY + canvas.height / 2; }
+
+        // ==========================================
+        // TOMBOL
+        // ==========================================
+        function tombolFire() { return { x: canvas.width - 80, y: canvas.height - 110, r: TOMBOL_R }; }
+        function tombolSpawn() { return { x: 80, y: canvas.height - 110, r: TOMBOL_R }; }
+        function dalamTombol(p, t) {
+            return (p.x - t.x) ** 2 + (p.y - t.y) ** 2 <= t.r * t.r;
+        }
+
+        // ==========================================
+        // AKSI
+        // ==========================================
+        function tembak() {
+            sfxTembak.currentTime = 0;
+            sfxTembak.play().catch(() => {});
+
+            let offsetX = 0;
+            if (giliranTembak === 0) { offsetX = -JARAK_LARAS; recoilKiri = RECOIL_MAX; }
+            if (giliranTembak === 1) { offsetX = 0; recoilTengah = RECOIL_MAX; }
+            if (giliranTembak === 2) { offsetX = JARAK_LARAS; recoilKanan = RECOIL_MAX; }
+
+            const m = muzzleWorld(offsetX, LARAS_OFFSET_Y);
+
+            bullets.push({
+                x: m.x, y: m.y,
+                vx: Math.cos(currentAngle) * KECEPATAN_PELURU,
+                vy: Math.sin(currentAngle) * KECEPATAN_PELURU,
+                angle: currentAngle,
+                awal: KECEPATAN_PELURU,  // untuk panel
+                tembus: 0,               // jumlah piksel yang ditembus langsung
+                panas: 0,                // jumlah piksel yang jadi panas
+                dalam: false,
+                mati: false
+            });
+
+            effects.push({
+                x: m.x, y: m.y,
+                angle: currentAngle,
+                img: (giliranTembak === 2) ? imgKilatan2 : imgKilatan1,
+                life: KILATAN_DURASI,
+                total: KILATAN_DURASI
+            });
+
+            giliranTembak = (giliranTembak + 1) % 3;
+            fireCooldown = FIRE_INTERVAL;
+        }
+
+        function spawnSel() {
+            if (!warnaDasar) return;
+            const m = muzzleWorld(0, LARAS_OFFSET_Y);
+            const jarak = JARAK_SPAWN_SEL * SEL;
+            const tx = m.x + Math.cos(currentAngle) * jarak;
+            const ty = m.y + Math.sin(currentAngle) * jarak;
+            const sx = Math.floor(tx / SEL) * SEL;
+            const sy = Math.floor(ty / SEL) * SEL;
+            if (sels.some(c => c.x === sx && c.y === sy)) return;
+            sels.push(buatSel(sx, sy));
+        }
+
+        // ==========================================
+        // FISIKA PELURU
+        // ==========================================
+        function cekRadar(x, y) {
+            for (const c of sels) {
+                if (x >= c.x - RADAR_MARGIN && x <= c.x + SEL + RADAR_MARGIN &&
+                    y >= c.y - RADAR_MARGIN && y <= c.y + SEL + RADAR_MARGIN) {
+                    c.radar = RADAR_DURASI;
+                }
+            }
+        }
+
+        function sentuh(b) {
+            const c = cariSel(b.x, b.y);
+            if (!c) return;
+
+            const lx = Math.min(PIX - 1, Math.max(0, Math.floor((b.x - c.x) / ZOOM)));
+            const ly = Math.min(PIX - 1, Math.max(0, Math.floor((b.y - c.y) / ZOOM)));
+            const idx = ly * PIX + lx;
+            if (c.pix[idx] === 0) return;
+
+            if (!b.dalam) {
+                b.dalam = true;
+                b.vx *= HIT_AWAL_FAKTOR;
+                b.vy *= HIT_AWAL_FAKTOR;
+            }
+
+            hapusPiksel(c, idx);
+            b.tembus++;
+            c.kena = 0.15;
+
+            for (let dy = -1; dy <= 1; dy++) {
+                for (let dx = -1; dx <= 1; dx++) {
+                    if (dx === 0 && dy === 0) continue;
+                    const nx = lx + dx, ny = ly + dy;
+                    if (nx < 0 || ny < 0 || nx >= PIX || ny >= PIX) continue;
+                    const nidx = ny * PIX + nx;
+                    if (c.pix[nidx] === 0) continue;
+                    if (Math.random() < PANAS_CHANCE) {
+                        hapusPiksel(c, nidx);
+                    } else {
+                        jadikanPanas(c, nidx);
+                        b.panas++;
+                    }
+                }
+            }
+
+            b.vx *= PENETRASI_FAKTOR;
+            b.vy *= PENETRASI_FAKTOR;
+            if (Math.hypot(b.vx, b.vy) < KECEPATAN_MIN) b.mati = true;
+        }
+
+        function majuPeluru(b, dt) {
+            const langkah = Math.max(1, Math.ceil(Math.hypot(b.vx, b.vy) * dt));
+            const sub = dt / langkah;
+            for (let i = 0; i < langkah; i++) {
+                b.x += b.vx * sub;
+                b.y += b.vy * sub;
+                cekRadar(b.x, b.y);
+                sentuh(b);
+                if (b.mati) return;
+            }
+        }
+
+        function catatSelesai(b) {
+            lastShot = {
+                awal: Math.floor(b.awal),
+                sisa: Math.floor(Math.hypot(b.vx, b.vy)),
+                tembus: b.tembus,
+                panas: b.panas
+            };
+        }
+
+        // ==========================================
+        // INPUT (multi-sentuh)
+        // ==========================================
+        function posisi(e) {
+            const r = canvas.getBoundingClientRect();
+            return { x: e.clientX - r.left, y: e.clientY - r.top };
+        }
+
+        function jumlahAim() {
+            let n = 0;
+            for (const v of pointers.values()) if (v.role === 'aim') n++;
+            return n;
+        }
+
+        canvas.addEventListener('pointerdown', e => {
+            e.preventDefault();
+            const p = posisi(e);
+            const info = { x: p.x, y: p.y, role: 'aim' };
+
+            if (dalamTombol(p, tombolFire())) {
+                info.role = 'fire';
+                tembak();
+            } else if (dalamTombol(p, tombolSpawn())) {
+                info.role = 'spawn';
+                spawnSel();
+            } else if (jumlahAim() === 0) {
+                targetAngle = Math.atan2(p.y - canvas.height / 2, p.x - canvas.width / 2);
+            }
+
+            pointers.set(e.pointerId, info);
+            lastMid = null;
+        });
+
+        canvas.addEventListener('pointermove', e => {
+            const info = pointers.get(e.pointerId);
+            if (!info) return;
+            e.preventDefault();
+
+            const p = posisi(e);
+            info.x = p.x;
+            info.y = p.y;
+            if (info.role !== 'aim') return;
+
+            const aims = [...pointers.values()].filter(v => v.role === 'aim');
+
+            if (aims.length === 1) {
+                targetAngle = Math.atan2(info.y - canvas.height / 2, info.x - canvas.width / 2);
+                lastMid = null;
+            } else {
+                const mx = aims.reduce((s, v) => s + v.x, 0) / aims.length;
+                const my = aims.reduce((s, v) => s + v.y, 0) / aims.length;
+                if (lastMid) {
+                    camX -= mx - lastMid.x;
+                    camY -= my - lastMid.y;
+                }
+                lastMid = { x: mx, y: my };
+            }
+        });
+
+        const lepasPointer = e => {
+            pointers.delete(e.pointerId);
+            lastMid = null;
+        };
+        canvas.addEventListener('pointerup', lepasPointer);
+        canvas.addEventListener('pointercancel', lepasPointer);
+
+        // ==========================================
+        // GAMBAR
+        // ==========================================
+        function gambarLatar() {
+            ctx.fillStyle = '#07080d';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+            ctx.strokeStyle = 'rgba(120, 130, 160, 0.08)';
+            ctx.lineWidth = 1;
+            const halfW = canvas.width / 2, halfH = canvas.height / 2;
+            const x0 = Math.floor((camX - halfW) / SEL) * SEL;
+            const y0 = Math.floor((camY - halfH) / SEL) * SEL;
+
+            ctx.beginPath();
+            for (let x = x0; x <= camX + halfW; x += SEL) {
+                const sx = Math.round(toScreenX(x)) + 0.5;
+                ctx.moveTo(sx, 0); ctx.lineTo(sx, canvas.height);
+            }
+            for (let y = y0; y <= camY + halfH; y += SEL) {
+                const sy = Math.round(toScreenY(y)) + 0.5;
+                ctx.moveTo(0, sy); ctx.lineTo(canvas.width, sy);
+            }
+            ctx.stroke();
+        }
+
+        function gambarSel(c) {
+            const sx = toScreenX(c.x), sy = toScreenY(c.y);
+            if (sx + SEL < 0 || sy + SEL < 0 || sx > canvas.width || sy > canvas.height) return;
+
+            for (let ly = 0; ly < PIX; ly++) {
+                for (let lx = 0; lx < PIX; lx++) {
+                    const idx = ly * PIX + lx;
+                    const st = c.pix[idx];
+                    if (st === 0) continue;
+                    ctx.fillStyle = (st === 2) ? c.panas[idx] : c.warna[idx];
+                    ctx.fillRect(sx + lx * ZOOM, sy + ly * ZOOM, ZOOM, ZOOM);
+                }
+            }
+
+            if (c.kena > 0) {
+                ctx.fillStyle = 'rgba(248, 113, 113, 0.25)';
+                ctx.fillRect(sx, sy, SEL, SEL);
+            }
+
+            if (RADAR_TAMPIL && c.radar > 0) {
+                ctx.save();
+                ctx.setLineDash([4, 3]);
+                ctx.strokeStyle = 'rgba(96, 165, 250, 0.7)';
+                ctx.lineWidth = 1;
+                ctx.strokeRect(sx - RADAR_MARGIN + 0.5, sy - RADAR_MARGIN + 0.5,
+                               SEL + 2 * RADAR_MARGIN - 1, SEL + 2 * RADAR_MARGIN - 1);
+                ctx.restore();
+            }
+        }
+
+        function gambarLingkaran(t, warna, aktif, label) {
+            ctx.globalAlpha = aktif ? 0.85 : 0.45;
+            ctx.fillStyle = '#000';
+            ctx.beginPath();
+            ctx.arc(t.x, t.y, t.r, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.strokeStyle = warna;
+            ctx.lineWidth = 3;
+            ctx.stroke();
+            ctx.fillStyle = warna;
+            ctx.font = 'bold 12px monospace';
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.fillText(label, t.x, t.y);
+            ctx.globalAlpha = 1;
+        }
+
+        function gambarTombol() {
+            const aktifFire = [...pointers.values()].some(v => v.role === 'fire');
+            const aktifSpawn = [...pointers.values()].some(v => v.role === 'spawn');
+            gambarLingkaran(tombolFire(), '#f87171', aktifFire, 'TEMBAK');
+            gambarLingkaran(tombolSpawn(), '#4ade80', aktifSpawn, 'SEL');
+        }
+
+        function gambarPanel() {
+            const baris = lastShot ? [
+                'Tembakan terakhir',
+                `Kecepatan awal : ${lastShot.awal} px/s`,
+                `Piksel tembus  : ${lastShot.tembus}`,
+                `Piksel panas   : ${lastShot.panas}`,
+                `Kecepatan sisa : ${lastShot.sisa} px/s`
+            ] : ['Belum ada tembakan'];
+
+            const pad = 8, lh = 16, w = 210, h = pad * 2 + lh * baris.length;
+            ctx.save();
+            ctx.fillStyle = 'rgba(0, 0, 0, 0.6)';
+            ctx.fillRect(10, 60, w, h);
+            ctx.fillStyle = '#e5e7eb';
+            ctx.font = '12px monospace';
+            ctx.textAlign = 'left';
+            ctx.textBaseline = 'top';
+            baris.forEach((t, i) => ctx.fillText(t, 10 + pad, 60 + pad + i * lh));
+            ctx.restore();
+        }
+
+        // ==========================================
+        // LOOP UTAMA
+        // ==========================================
+        let lastTime = performance.now();
+
+        function loop(now) {
+            let dt = (now - lastTime) / 1000;
+            lastTime = now;
+            if (dt > 0.05) dt = 0.05;
+
+            const siap = initSiap();
+
+            let diff = targetAngle - currentAngle;
+            while (diff > Math.PI) diff -= Math.PI * 2;
+            while (diff < -Math.PI) diff += Math.PI * 2;
+            currentAngle += diff * (1 - Math.pow(0.9, dt * 60));
+
+            const laju = RECOIL_MAX / RECOIL_DURASI * dt;
+            recoilKiri = Math.max(0, recoilKiri - laju);
+            recoilTengah = Math.max(0, recoilTengah - laju);
+            recoilKanan = Math.max(0, recoilKanan - laju);
+
+            fireCooldown -= dt;
+            if (fireCooldown <= 0 && [...pointers.values()].some(v => v.role === 'fire')) {
+                tembak();
+            }
+
+            for (const c of sels) {
+                c.radar = Math.max(0, c.radar - dt);
+                c.kena = Math.max(0, c.kena - dt);
+            }
+
+            if (siap) {
+                for (let i = bullets.length - 1; i >= 0; i--) {
+                    const b = bullets[i];
+                    majuPeluru(b, dt);
+                    if (b.mati || Math.hypot(b.x - camX, b.y - camY) > 4000) {
+                        catatSelesai(b);
+                        bullets.splice(i, 1);
+                    }
+                }
+                sels = sels.filter(c => c.sisa > 0);
+            }
+
+            for (let i = effects.length - 1; i >= 0; i--) {
+                effects[i].life -= dt;
+                if (effects[i].life <= 0) effects.splice(i, 1);
+            }
+
+            // ----- GAMBAR -----
+            gambarLatar();
+
+            if (siap) {
+                for (const c of sels) gambarSel(c);
+            }
+
+            const cx = canvas.width / 2;
+            const cy = canvas.height / 2;
+
+            if (imgAlas.complete && imgAlas.naturalWidth > 0) {
+                ctx.drawImage(imgAlas, cx - imgAlas.width / 2, cy - imgAlas.height / 2);
+            }
+
+            ctx.save();
+            ctx.translate(cx, cy + PIVOT_Y_OFFSET);
+            ctx.rotate(currentAngle + Math.PI / 2);
+
+            if (imgLaras.complete && imgLaras.naturalWidth > 0) {
+                ctx.drawImage(imgLaras, -imgLaras.width / 2 - JARAK_LARAS, LARAS_OFFSET_Y + recoilKiri);
+                ctx.drawImage(imgLaras, -imgLaras.width / 2, LARAS_OFFSET_Y + recoilTengah);
+                ctx.drawImage(imgLaras, -imgLaras.width / 2 + JARAK_LARAS, LARAS_OFFSET_Y + recoilKanan);
+            }
+
+            if (imgRumah.complete && imgRumah.naturalWidth > 0) {
+                ctx.drawImage(imgRumah, 0, 76, RUMAH_W, RUMAH_H,
+                              -RUMAH_W / 2, -RUMAH_H / 2, RUMAH_W, RUMAH_H);
+            }
+            ctx.restore();
+
+            for (const f of effects) {
+                if (!f.img.complete || f.img.naturalWidth === 0) continue;
+                const sx = toScreenX(f.x), sy = toScreenY(f.y);
+                const maju = f.img.naturalHeight * KILATAN_SKALA * KILATAN_MAJU;
+                ctx.save();
+                ctx.translate(sx + Math.cos(f.angle) * maju, sy + Math.sin(f.angle) * maju);
+                ctx.rotate(f.angle + Math.PI / 2);
+                ctx.globalAlpha = Math.max(0, f.life / f.total);
+                const w = f.img.naturalWidth * KILATAN_SKALA;
+                const h = f.img.naturalHeight * KILATAN_SKALA;
+                ctx.drawImage(f.img, -w / 2, -h / 2, w, h);
+                ctx.restore();
+            }
+
+            if (imgPeluru.complete && imgPeluru.naturalWidth > 0) {
+                for (const b of bullets) {
+                    ctx.save();
+                    ctx.translate(toScreenX(b.x), toScreenY(b.y));
+                    ctx.rotate(b.angle + Math.PI / 2);
+                    ctx.drawImage(imgPeluru, -PELURU_W / 2, -PELURU_H / 2, PELURU_W, PELURU_H);
+
+                    ctx.beginPath();
+                    ctx.moveTo(0, 0);
+                    ctx.lineTo(0, 30);
+                    ctx.strokeStyle = 'rgba(253, 224, 71, 0.5)';
+                    ctx.lineWidth = 3;
+                    ctx.stroke();
+                    ctx.restore();
+                }
+            }
+
+            gambarTombol();
+            gambarPanel();
+
+            requestAnimationFrame(loop);
+        }
+
+        requestAnimationFrame(loop);
+    </script>
+</body>
+</html>
