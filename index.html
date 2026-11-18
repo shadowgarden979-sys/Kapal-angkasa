@@ -40,16 +40,17 @@
         const imgPeluru = new Image(); imgPeluru.src = "peluru.png";
 
         // ==========================================
-        // PENGATURAN KALIBRASI (UBAH ANGKA INI JIKA MASIH MELESET)
+        // PENGATURAN KALIBRASI (BISA KAMU OTAK-ATIK)
         // ==========================================
-        // Jarak antar laras
-        const JARAK_LARAS = 22; 
+        // Jarak antar laras (diperlebar 1px menjadi 23 untuk menutup celah)
+        const JARAK_LARAS = 23; 
         
-        // Tarik laras lebih ke bawah (masuk ke dalam rumah)
-        const OFFSET_Y_LARAS = -115; 
+        // Geser Laras ke atas/bawah. Perkecil angkanya (misal -120) jika laras kurang masuk.
+        const LARAS_OFFSET_Y = -115; 
         
-        // Geser rumah meriam agar pas di tengah alas
-        const OFFSET_Y_RUMAH = -45; 
+        // Posisi Pivot (Titik Putar). Angka positif = poros turun ke bawah.
+        // Ubah ini jika poros rotasi masih terasa terlalu tinggi.
+        const PIVOT_Y_OFFSET = 15; 
 
         // Crop ukuran rumah (sesuai gambar asli)
         const RUMAH_W = 98, RUMAH_H = 109;   
@@ -58,11 +59,10 @@
         let currentAngle = -Math.PI / 2; 
         let targetAngle = -Math.PI / 2;
         
-        // Sistem Recoil Bergantian
         let recoilKiri = 0;
         let recoilTengah = 0;
         let recoilKanan = 0;
-        let giliranTembak = 0; // 0: Kiri, 1: Tengah, 2: Kanan
+        let giliranTembak = 0; 
 
         let bullets = [];
         const PELURU_W = 7;                  
@@ -85,20 +85,18 @@
             sfxTembak.play().catch(err => {});
 
             const cx = canvas.width / 2;
-            const cy = canvas.height / 2; 
+            const cy = canvas.height / 2 + PIVOT_Y_OFFSET; 
             
-            // Hitung offset X lokal berdasarkan laras yang menembak
             let offsetX = 0;
             if (giliranTembak === 0) { offsetX = -JARAK_LARAS; recoilKiri = 15; }
             if (giliranTembak === 1) { offsetX = 0; recoilTengah = 15; }
             if (giliranTembak === 2) { offsetX = JARAK_LARAS; recoilKanan = 15; }
 
-            // Hitung posisi ujung laras (berdasarkan rotasi)
-            // Ujung laras lokal ada di (offsetX, OFFSET_Y_LARAS - 110)
+            // Hitung posisi ujung laras
             const localTipX = offsetX;
-            const localTipY = OFFSET_Y_LARAS - 100; // Panjang moncong
+            // Ujung laras berada di LARAS_OFFSET_Y - panjang laras
+            const localTipY = LARAS_OFFSET_Y - 100; 
             
-            // Rotasi titik ujung laras ke koordinat global
             const cos = Math.cos(currentAngle + Math.PI / 2);
             const sin = Math.sin(currentAngle + Math.PI / 2);
             
@@ -112,7 +110,6 @@
                 angle: currentAngle
             });
 
-            // Ganti giliran laras
             giliranTembak = (giliranTembak + 1) % 3;
         }
 
@@ -125,7 +122,6 @@
             while (diff < -Math.PI) diff += Math.PI * 2;
             currentAngle += diff * 0.1;
 
-            // Animasi Recoil Kembali
             if (recoilKiri > 0) recoilKiri -= 1;
             if (recoilTengah > 0) recoilTengah -= 1;
             if (recoilKanan > 0) recoilKanan -= 1;
@@ -144,31 +140,31 @@
             const cx = canvas.width / 2;
             const cy = canvas.height / 2;
 
-            // 1. GAMBAR ALAS (Diam di tengah)
+            // 1. GAMBAR ALAS (Statis di tengah layar)
             if (imgAlas.complete && imgAlas.naturalWidth > 0) {
                 ctx.drawImage(imgAlas, cx - imgAlas.width/2, cy - imgAlas.height/2);
             }
 
-            // 2. GAMBAR LARAS & RUMAH (Berputar)
+            // 2. GAMBAR LARAS & RUMAH (Berputar pada poros yang sama)
             ctx.save();
-            // Titik putar (Pivot) tepat di tengah layar
-            ctx.translate(cx, cy); 
+            // Pindahkan titik (0,0) ke poros rotasi yang baru
+            ctx.translate(cx, cy + PIVOT_Y_OFFSET); 
             ctx.rotate(currentAngle + Math.PI / 2); 
 
-            // Gambar Laras (Dengan Recoil Masing-masing)
+            // Gambar Laras
             if (imgLaras.complete && imgLaras.naturalWidth > 0) {
                 // Laras Kiri
-                ctx.drawImage(imgLaras, -imgLaras.width/2 - JARAK_LARAS, OFFSET_Y_LARAS + recoilKiri);
+                ctx.drawImage(imgLaras, -imgLaras.width/2 - JARAK_LARAS, LARAS_OFFSET_Y + recoilKiri);
                 // Laras Tengah
-                ctx.drawImage(imgLaras, -imgLaras.width/2, OFFSET_Y_LARAS + recoilTengah);
+                ctx.drawImage(imgLaras, -imgLaras.width/2, LARAS_OFFSET_Y + recoilTengah);
                 // Laras Kanan
-                ctx.drawImage(imgLaras, -imgLaras.width/2 + JARAK_LARAS, OFFSET_Y_LARAS + recoilKanan);
+                ctx.drawImage(imgLaras, -imgLaras.width/2 + JARAK_LARAS, LARAS_OFFSET_Y + recoilKanan);
             }
 
-            // Gambar Rumah Meriam (Menutupi pangkal laras)
+            // Gambar Rumah Meriam (Tepat di titik 0,0 poros)
             if (imgRumah.complete && imgRumah.naturalWidth > 0) {
                 ctx.drawImage(imgRumah, 0, 76, RUMAH_W, RUMAH_H,
-                              -RUMAH_W/2, OFFSET_Y_RUMAH, RUMAH_W, RUMAH_H);
+                              -RUMAH_W/2, -RUMAH_H/2, RUMAH_W, RUMAH_H);
             }
             ctx.restore();
 
@@ -180,7 +176,6 @@
                     ctx.rotate(b.angle + Math.PI / 2); 
                     ctx.drawImage(imgPeluru, -PELURU_W/2, -PELURU_H/2, PELURU_W, PELURU_H);
                     
-                    // Ekor
                     ctx.beginPath();
                     ctx.moveTo(0, 0);
                     ctx.lineTo(0, 30);
