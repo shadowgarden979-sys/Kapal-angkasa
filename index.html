@@ -15,7 +15,7 @@
     </style>
 </head>
 <body>
-    <div id="instruksi">Geser Jari = Putar | Tap Layar = Tembak Beruntun</div>
+    <div id="instruksi">Satu jari = putar | Dua jari = geser layar | Kanan bawah = tembak | Kiri bawah = sel</div>
     <canvas id="gameCanvas"></canvas>
 
     <audio id="sfxTembak" src="tembakan.mp3" preload="auto"></audio>
@@ -45,10 +45,12 @@
         const imgKilatan2 = new Image(); imgKilatan2.src = "kilatan2.png";
 
         // ==========================================
-        // PENGATURAN GRID
+        // PENGATURAN SEL
         // ==========================================
-        const SEL_PX = 16;  // ukuran sel asli
-        const ZOOM = 2;     // perbesaran supaya terlihat di HP
+        const SEL_PX = 16;          // ukuran sel asli (piksel simulasi)
+        const ZOOM = 2;             // perbesaran tampilan
+        const SEL = SEL_PX * ZOOM;  // ukuran satu sel di dunia (piksel layar)
+        const JARAK_SPAWN_SEL = 5;  // jarak sel baru di depan moncong, dalam jumlah sel
 
         // ==========================================
         // PENGATURAN KALIBRASI (SILAKAN OTAK-ATIK)
@@ -62,22 +64,26 @@
         const RECOIL_MAX = 50;       // jarak mundur laras saat menembak (piksel)
         const RECOIL_DURASI = 0.35;  // detik, waktu laras kembali ke posisi awal
 
+        // Tembakan
+        const FIRE_INTERVAL = 0.15;  // detik antar tembakan saat tombol tembak ditahan
+
         // Peluru
         const KECEPATAN_PELURU = 800; // piksel per detik (sesuai Yamato)
         const PELURU_W = 7;
         const PELURU_H = 24;
-
-        // Target
-        const TARGET_SIZE = 64;       // 2×2 sel (1 sel = 32 piksel di layar)
-        const TARGET_OFFSET_X = 150;  // jarak target dari pusat layar
-        const TARGET_OFFSET_Y = -150;
 
         // Kilatan
         const KILATAN_SKALA = 0.25;   // ukuran kilatan relatif terhadap aslinya
         const KILATAN_DURASI = 0.06;  // detik
         const KILATAN_MAJU = 0.5;     // seberapa jauh pangkal kilatan digeser ke depan moncong
 
+        // Tombol
+        const TOMBOL_R = 48;
+
         // ==========================================
+        // STATUS
+        // ==========================================
+        let camX = 0, camY = 0;          // posisi kamera di dunia (berada di tengah layar)
         let currentAngle = -Math.PI / 2;
         let targetAngle = -Math.PI / 2;
 
@@ -85,127 +91,226 @@
         let recoilTengah = 0;
         let recoilKanan = 0;
         let giliranTembak = 0;
+        let fireCooldown = 0;
 
         let bullets = [];
         let effects = [];
-        let hitTimer = 0; // untuk kedip target saat kena
+        let sels = [];                   // { x, y, hit } dalam koordinat dunia
 
-        function getTarget() {
-            const cx = canvas.width / 2;
-            const cy = canvas.height / 2;
-            return {
-                x: cx + TARGET_OFFSET_X - TARGET_SIZE / 2,
-                y: cy + TARGET_OFFSET_Y - TARGET_SIZE / 2,
-                w: TARGET_SIZE,
-                h: TARGET_SIZE
-            };
+        const pointers = new Map();      // pointerId -> { x, y, role }
+        let lastMid = null;
+
+        // ==========================================
+        // KOORDINAT
+        // ==========================================
+        // Pivot turret di dunia, berada tepat di posisi kamera
+        function pivotWorld() {
+            return { x: camX, y: camY + PIVOT_Y_OFFSET };
         }
 
-        // Cek apakah garis dari (x1,y1) ke (x2,y2) menyentuh kotak
-        function segmentKenaKotak(x1, y1, x2, y2, k) {
-            const jarak = Math.hypot(x2 - x1, y2 - y1);
-            const langkah = Math.max(1, Math.ceil(jarak / 3));
-            for (let i = 0; i <= langkah; i++) {
-                const t = i / langkah;
-                const px = x1 + (x2 - x1) * t;
-                const py = y1 + (y2 - y1) * t;
-                if (px >= k.x && px <= k.x + k.w && py >= k.y && py <= k.y + k.h) return true;
-            }
-            return false;
+        // Posisi titik di laras (ox, oy relatif terhadap pivot), dihitung di dunia
+        function muzzleWorld(ox, oy) {
+            const p = pivotWorld();
+            const c = Math.cos(currentAngle + Math.PI / 2);
+            const s = Math.sin(currentAngle + Math.PI / 2);
+            return { x: p.x + (ox * c - oy * s), y: p.y + (ox * s + oy * c) };
         }
 
-        function handleMove(e) {
-            const rect = canvas.getBoundingClientRect();
-            const clientX = e.touches ? e.touches[0].clientX : e.clientX;
-            const clientY = e.touches ? e.touches[0].clientY : e.clientY;
-            const mouseX = clientX - rect.left;
-            const mouseY = clientY - rect.top;
-            const centerX = canvas.width / 2;
-            const centerY = canvas.height / 2;
-            targetAngle = Math.atan2(mouseY - centerY, mouseX - centerX);
+        // Ubah koordinat dunia jadi koordinat layar
+        function toScreenX(x) { return x - camX + canvas.width / 2; }
+        function toScreenY(y) { return y - camY + canvas.height / 2; }
+
+        // ==========================================
+        // TOMBOL
+        // ==========================================
+        function tombolFire() {
+            return { x: canvas.width - 80, y: canvas.height - 110, r: TOMBOL_R };
+        }
+        function tombolSpawn() {
+            return { x: 80, y: canvas.height - 110, r: TOMBOL_R };
+        }
+        function dalamTombol(p, t) {
+            return (p.x - t.x) ** 2 + (p.y - t.y) ** 2 <= t.r * t.r;
         }
 
-        function handleShoot(e) {
-            handleMove(e);
+        // ==========================================
+        // AKSI
+        // ==========================================
+        function tembak() {
             sfxTembak.currentTime = 0;
-            sfxTembak.play().catch(err => {});
-
-            const cx = canvas.width / 2;
-            const cy = canvas.height / 2 + PIVOT_Y_OFFSET;
+            sfxTembak.play().catch(() => {});
 
             let offsetX = 0;
             if (giliranTembak === 0) { offsetX = -JARAK_LARAS; recoilKiri = RECOIL_MAX; }
             if (giliranTembak === 1) { offsetX = 0; recoilTengah = RECOIL_MAX; }
             if (giliranTembak === 2) { offsetX = JARAK_LARAS; recoilKanan = RECOIL_MAX; }
 
-            // Ujung laras depan (posisi saat diam), tidak ikut mundur
-            const localTipX = offsetX;
-            const localTipY = LARAS_OFFSET_Y;
-
-            const cos = Math.cos(currentAngle + Math.PI / 2);
-            const sin = Math.sin(currentAngle + Math.PI / 2);
-
-            const tipX = cx + (localTipX * cos - localTipY * sin);
-            const tipY = cy + (localTipX * sin + localTipY * cos);
+            // Moncong depan (posisi saat diam), tidak ikut mundur
+            const m = muzzleWorld(offsetX, LARAS_OFFSET_Y);
 
             bullets.push({
-                x: tipX, y: tipY,
+                x: m.x, y: m.y,
                 vx: Math.cos(currentAngle) * KECEPATAN_PELURU,
                 vy: Math.sin(currentAngle) * KECEPATAN_PELURU,
                 angle: currentAngle
             });
 
-            const imgKilatan = (giliranTembak === 2) ? imgKilatan2 : imgKilatan1;
             effects.push({
-                x: tipX, y: tipY,
+                x: m.x, y: m.y,
                 angle: currentAngle,
-                img: imgKilatan,
+                img: (giliranTembak === 2) ? imgKilatan2 : imgKilatan1,
                 life: KILATAN_DURASI,
                 total: KILATAN_DURASI
             });
 
             giliranTembak = (giliranTembak + 1) % 3;
+            fireCooldown = FIRE_INTERVAL;
         }
 
-        canvas.addEventListener('pointermove', handleMove);
-        canvas.addEventListener('pointerdown', handleShoot);
+        function spawnSel() {
+            const m = muzzleWorld(0, LARAS_OFFSET_Y);
+            const jarak = JARAK_SPAWN_SEL * SEL;
+            const tx = m.x + Math.cos(currentAngle) * jarak;
+            const ty = m.y + Math.sin(currentAngle) * jarak;
+
+            // Tempel ke grid sel
+            const sx = Math.floor(tx / SEL) * SEL;
+            const sy = Math.floor(ty / SEL) * SEL;
+
+            // Jangan menumpuk sel di posisi yang sama
+            if (sels.some(s => s.x === sx && s.y === sy)) return;
+            sels.push({ x: sx, y: sy, hit: 0 });
+        }
 
         // ==========================================
-        // GAMBAR GRID SEL
+        // INPUT (multi-sentuh)
+        // ==========================================
+        function posisi(e) {
+            const r = canvas.getBoundingClientRect();
+            return { x: e.clientX - r.left, y: e.clientY - r.top };
+        }
+
+        canvas.addEventListener('pointerdown', e => {
+            e.preventDefault();
+            const p = posisi(e);
+            const info = { x: p.x, y: p.y, role: 'aim' };
+
+            if (dalamTombol(p, tombolFire())) {
+                info.role = 'fire';
+                tembak();
+            } else if (dalamTombol(p, tombolSpawn())) {
+                info.role = 'spawn';
+                spawnSel();
+            } else {
+                targetAngle = Math.atan2(p.y - canvas.height / 2, p.x - canvas.width / 2);
+            }
+
+            pointers.set(e.pointerId, info);
+            lastMid = null;
+        });
+
+        canvas.addEventListener('pointermove', e => {
+            const info = pointers.get(e.pointerId);
+            if (!info) return;
+            e.preventDefault();
+
+            const p = posisi(e);
+            info.x = p.x;
+            info.y = p.y;
+            if (info.role !== 'aim') return;
+
+            const aim = [...pointers.values()].filter(v => v.role === 'aim');
+
+            if (aim.length === 1) {
+                // Satu jari: putar turret
+                targetAngle = Math.atan2(info.y - canvas.height / 2, info.x - canvas.width / 2);
+                lastMid = null;
+            } else if (aim.length >= 2) {
+                // Dua jari: geser layar (kamera) mengikuti titik tengah kedua jari
+                const mx = aim.reduce((s, v) => s + v.x, 0) / aim.length;
+                const my = aim.reduce((s, v) => s + v.y, 0) / aim.length;
+                if (lastMid) {
+                    camX -= mx - lastMid.x;
+                    camY -= my - lastMid.y;
+                }
+                lastMid = { x: mx, y: my };
+            }
+        });
+
+        const bersihkanPointer = e => {
+            pointers.delete(e.pointerId);
+            lastMid = null;
+        };
+        canvas.addEventListener('pointerup', bersihkanPointer);
+        canvas.addEventListener('pointercancel', bersihkanPointer);
+
+        // ==========================================
+        // GAMBAR GRID SEL (mengikuti kamera)
         // ==========================================
         function gambarGrid() {
             if (!imgSel.complete || imgSel.naturalWidth === 0) return;
 
-            const ukuran = SEL_PX * ZOOM;
-            const kolom = Math.ceil(canvas.width / ukuran) + 1;
-            const baris = Math.ceil(canvas.height / ukuran) + 1;
+            const halfW = canvas.width / 2;
+            const halfH = canvas.height / 2;
+            const x0 = Math.floor((camX - halfW) / SEL) * SEL;
+            const y0 = Math.floor((camY - halfH) / SEL) * SEL;
+            const x1 = camX + halfW + SEL;
+            const y1 = camY + halfH + SEL;
 
-            for (let y = 0; y < baris; y++) {
-                for (let x = 0; x < kolom; x++) {
-                    ctx.drawImage(imgSel, x * ukuran, y * ukuran, ukuran, ukuran);
+            for (let y = y0; y < y1; y += SEL) {
+                for (let x = x0; x < x1; x += SEL) {
+                    ctx.drawImage(imgSel, toScreenX(x), toScreenY(y), SEL, SEL);
                 }
             }
         }
 
         // ==========================================
-        // GAMBAR TARGET (tekstur sel)
+        // GAMBAR SEL YANG SUDAH DISPAWN
         // ==========================================
-        function gambarTarget() {
-            if (!imgSel.complete || imgSel.naturalWidth === 0) return;
-            const t = getTarget();
-            const ukuranSel = SEL_PX * ZOOM;
+        function gambarSels() {
+            for (const s of sels) {
+                const sx = toScreenX(s.x);
+                const sy = toScreenY(s.y);
+                if (sx + SEL < 0 || sy + SEL < 0 || sx > canvas.width || sy > canvas.height) continue;
 
-            for (let y = t.y; y < t.y + t.h; y += ukuranSel) {
-                for (let x = t.x; x < t.x + t.w; x += ukuranSel) {
-                    ctx.drawImage(imgSel, x, y, ukuranSel, ukuranSel);
+                if (imgSel.complete && imgSel.naturalWidth > 0) {
+                    ctx.drawImage(imgSel, sx, sy, SEL, SEL);
                 }
+                if (s.hit > 0) {
+                    ctx.fillStyle = 'rgba(248, 113, 113, 0.5)';
+                    ctx.fillRect(sx, sy, SEL, SEL);
+                }
+                ctx.strokeStyle = 'rgba(255, 255, 255, 0.35)';
+                ctx.lineWidth = 1;
+                ctx.strokeRect(sx + 0.5, sy + 0.5, SEL - 1, SEL - 1);
             }
+        }
 
-            // Kilatan merah saat kena
-            if (hitTimer > 0) {
-                ctx.fillStyle = 'rgba(248, 113, 113, 0.5)';
-                ctx.fillRect(t.x, t.y, t.w, t.h);
-            }
+        // ==========================================
+        // GAMBAR TOMBOL
+        // ==========================================
+        function gambarLingkaran(t, warna, aktif, label) {
+            ctx.globalAlpha = aktif ? 0.85 : 0.45;
+            ctx.fillStyle = '#000';
+            ctx.beginPath();
+            ctx.arc(t.x, t.y, t.r, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.strokeStyle = warna;
+            ctx.lineWidth = 3;
+            ctx.stroke();
+            ctx.fillStyle = warna;
+            ctx.font = 'bold 12px monospace';
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.fillText(label, t.x, t.y);
+            ctx.globalAlpha = 1;
+        }
+
+        function gambarTombol() {
+            const aktifFire = [...pointers.values()].some(v => v.role === 'fire');
+            const aktifSpawn = [...pointers.values()].some(v => v.role === 'spawn');
+            gambarLingkaran(tombolFire(), '#f87171', aktifFire, 'TEMBAK');
+            gambarLingkaran(tombolSpawn(), '#4ade80', aktifSpawn, 'SEL');
         }
 
         // ==========================================
@@ -218,35 +323,50 @@
             lastTime = now;
             if (dt > 0.05) dt = 0.05; // cegah lompatan besar saat tab tidak aktif
 
-            // Rotasi turret, dibuat tidak bergantung frame rate
+            // Rotasi turret
             let diff = targetAngle - currentAngle;
             while (diff > Math.PI) diff -= Math.PI * 2;
             while (diff < -Math.PI) diff += Math.PI * 2;
             currentAngle += diff * (1 - Math.pow(0.9, dt * 60));
 
-            // Recoil memudar dalam RECOIL_DURASI detik
+            // Recoil memudar
             const laju = RECOIL_MAX / RECOIL_DURASI * dt;
             recoilKiri = Math.max(0, recoilKiri - laju);
             recoilTengah = Math.max(0, recoilTengah - laju);
             recoilKanan = Math.max(0, recoilKanan - laju);
 
-            // Kedip target
-            if (hitTimer > 0) hitTimer -= dt;
+            // Tembakan beruntun saat tombol ditahan
+            fireCooldown -= dt;
+            if (fireCooldown <= 0 && [...pointers.values()].some(v => v.role === 'fire')) {
+                tembak();
+            }
 
-            // Peluru bergerak dan dicek tabrakannya
-            const target = getTarget();
+            // Kedip sel yang kena
+            for (const s of sels) {
+                if (s.hit > 0) s.hit -= dt;
+            }
+
+            // Peluru bergerak dan dicek tabrakannya terhadap sel
             for (let i = bullets.length - 1; i >= 0; i--) {
                 const b = bullets[i];
                 const prevX = b.x, prevY = b.y;
                 b.x += b.vx * dt;
                 b.y += b.vy * dt;
 
-                if (segmentKenaKotak(prevX, prevY, b.x, b.y, target)) {
-                    hitTimer = 0.15;
+                let kena = false;
+                for (const s of sels) {
+                    if (segmentKenaKotak(prevX, prevY, b.x, b.y, { x: s.x, y: s.y, w: SEL, h: SEL })) {
+                        s.hit = 0.15;
+                        kena = true;
+                        break;
+                    }
+                }
+                if (kena) {
                     bullets.splice(i, 1);
                     continue;
                 }
-                if (b.x < 0 || b.x > canvas.width || b.y < 0 || b.y > canvas.height) {
+                // Buang peluru yang sudah terlalu jauh dari kamera
+                if (Math.abs(b.x - camX) > 4000 || Math.abs(b.y - camY) > 4000) {
                     bullets.splice(i, 1);
                 }
             }
@@ -267,40 +387,39 @@
             // 0. Grid sel (paling belakang)
             gambarGrid();
 
-            // 1. Target
-            gambarTarget();
+            // 1. Sel yang sudah dispawn
+            gambarSels();
 
-            // 2. Alas
+            // 2. Alas (tetap di tengah)
             if (imgAlas.complete && imgAlas.naturalWidth > 0) {
-                ctx.drawImage(imgAlas, cx - imgAlas.width/2, cy - imgAlas.height/2);
+                ctx.drawImage(imgAlas, cx - imgAlas.width / 2, cy - imgAlas.height / 2);
             }
 
-            // 3. Laras & rumah
+            // 3. Laras & rumah (tetap di tengah)
             ctx.save();
             ctx.translate(cx, cy + PIVOT_Y_OFFSET);
             ctx.rotate(currentAngle + Math.PI / 2);
 
             if (imgLaras.complete && imgLaras.naturalWidth > 0) {
-                ctx.drawImage(imgLaras, -imgLaras.width/2 - JARAK_LARAS, LARAS_OFFSET_Y + recoilKiri);
-                ctx.drawImage(imgLaras, -imgLaras.width/2, LARAS_OFFSET_Y + recoilTengah);
-                ctx.drawImage(imgLaras, -imgLaras.width/2 + JARAK_LARAS, LARAS_OFFSET_Y + recoilKanan);
+                ctx.drawImage(imgLaras, -imgLaras.width / 2 - JARAK_LARAS, LARAS_OFFSET_Y + recoilKiri);
+                ctx.drawImage(imgLaras, -imgLaras.width / 2, LARAS_OFFSET_Y + recoilTengah);
+                ctx.drawImage(imgLaras, -imgLaras.width / 2 + JARAK_LARAS, LARAS_OFFSET_Y + recoilKanan);
             }
 
             if (imgRumah.complete && imgRumah.naturalWidth > 0) {
                 ctx.drawImage(imgRumah, 0, 76, RUMAH_W, RUMAH_H,
-                              -RUMAH_W/2, -RUMAH_H/2, RUMAH_W, RUMAH_H);
+                              -RUMAH_W / 2, -RUMAH_H / 2, RUMAH_W, RUMAH_H);
             }
             ctx.restore();
 
             // 4. Kilatan moncong
             for (const f of effects) {
                 if (!f.img.complete || f.img.naturalWidth === 0) continue;
-                ctx.save();
+                const sx = toScreenX(f.x);
+                const sy = toScreenY(f.y);
                 const maju = f.img.naturalHeight * KILATAN_SKALA * KILATAN_MAJU;
-                ctx.translate(
-                    f.x + Math.cos(f.angle) * maju,
-                    f.y + Math.sin(f.angle) * maju
-                );
+                ctx.save();
+                ctx.translate(sx + Math.cos(f.angle) * maju, sy + Math.sin(f.angle) * maju);
                 ctx.rotate(f.angle + Math.PI / 2);
                 ctx.globalAlpha = Math.max(0, f.life / f.total);
                 const w = f.img.naturalWidth * KILATAN_SKALA;
@@ -313,9 +432,9 @@
             if (imgPeluru.complete && imgPeluru.naturalWidth > 0) {
                 for (const b of bullets) {
                     ctx.save();
-                    ctx.translate(b.x, b.y);
+                    ctx.translate(toScreenX(b.x), toScreenY(b.y));
                     ctx.rotate(b.angle + Math.PI / 2);
-                    ctx.drawImage(imgPeluru, -PELURU_W/2, -PELURU_H/2, PELURU_W, PELURU_H);
+                    ctx.drawImage(imgPeluru, -PELURU_W / 2, -PELURU_H / 2, PELURU_W, PELURU_H);
 
                     ctx.beginPath();
                     ctx.moveTo(0, 0);
@@ -328,7 +447,23 @@
                 }
             }
 
+            // 6. Tombol (paling depan)
+            gambarTombol();
+
             requestAnimationFrame(loop);
+        }
+
+        // Cek apakah garis dari (x1,y1) ke (x2,y2) menyentuh kotak
+        function segmentKenaKotak(x1, y1, x2, y2, k) {
+            const jarak = Math.hypot(x2 - x1, y2 - y1);
+            const langkah = Math.max(1, Math.ceil(jarak / 3));
+            for (let i = 0; i <= langkah; i++) {
+                const t = i / langkah;
+                const px = x1 + (x2 - x1) * t;
+                const py = y1 + (y2 - y1) * t;
+                if (px >= k.x && px <= k.x + k.w && py >= k.y && py <= k.y + k.h) return true;
+            }
+            return false;
         }
 
         requestAnimationFrame(loop);
