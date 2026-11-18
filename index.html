@@ -32,7 +32,7 @@
         resize();
 
         // ==========================================
-        // MEMANGGIL FILE GAMBAR DARI GITHUB
+        // MEMANGGAL FILE GAMBAR DARI GITHUB
         // ==========================================
         const imgAlas = new Image(); imgAlas.src = "alas.png";
         const imgRumah = new Image(); imgRumah.src = "rumah-laras.png";
@@ -42,17 +42,16 @@
         // ==========================================
         // PENGATURAN KALIBRASI (SILAKAN OTAK-ATIK)
         // ==========================================
-        // Jarak antar laras (dilebarkan dari 23 menjadi 25)
-        const JARAK_LARAS = 25; 
+        // Jarak antar laras (DIPERKECIL menjadi 18 agar lebih rapat)
+        const JARAK_LARAS = 18; 
         
         // Geser Laras ke atas/bawah relatif terhadap rumah.
         const LARAS_OFFSET_Y = -115; 
         
-        // Posisi Pivot (Titik Putar & Posisi Rumah). 
-        // Diperbesar ke 22 agar rumah mundur ke belakang (turun).
+        // Posisi Pivot (Sudah Gacor, jangan diubah)
         const PIVOT_Y_OFFSET = 22; 
 
-        // Crop ukuran rumah (sesuai gambar asli)
+        // Crop ukuran rumah
         const RUMAH_W = 98, RUMAH_H = 109;   
 
         // ==========================================
@@ -139,31 +138,29 @@
             const cx = canvas.width / 2;
             const cy = canvas.height / 2;
 
-            // 1. GAMBAR ALAS (Statis di tengah layar)
+            // 1. GAMBAR ALAS
             if (imgAlas.complete && imgAlas.naturalWidth > 0) {
                 ctx.drawImage(imgAlas, cx - imgAlas.width/2, cy - imgAlas.height/2);
             }
 
-            // 2. GAMBAR LARAS & RUMAH (Berputar pada poros yang sama)
+            // 2. GAMBAR LARAS & RUMAH
             ctx.save();
             ctx.translate(cx, cy + PIVOT_Y_OFFSET); 
             ctx.rotate(currentAngle + Math.PI / 2); 
 
-            // Gambar Laras
             if (imgLaras.complete && imgLaras.naturalWidth > 0) {
                 ctx.drawImage(imgLaras, -imgLaras.width/2 - JARAK_LARAS, LARAS_OFFSET_Y + recoilKiri);
                 ctx.drawImage(imgLaras, -imgLaras.width/2, LARAS_OFFSET_Y + recoilTengah);
                 ctx.drawImage(imgLaras, -imgLaras.width/2 + JARAK_LARAS, LARAS_OFFSET_Y + recoilKanan);
             }
 
-            // Gambar Rumah Meriam
             if (imgRumah.complete && imgRumah.naturalWidth > 0) {
                 ctx.drawImage(imgRumah, 0, 76, RUMAH_W, RUMAH_H,
                               -RUMAH_W/2, -RUMAH_H/2, RUMAH_W, RUMAH_H);
             }
             ctx.restore();
 
-            // 3. GAMBAR PELURU & EKOR
+            // 3. GAMBAR PELURU
             if (imgPeluru.complete && imgPeluru.naturalWidth > 0) {
                 for (let b of bullets) {
                     ctx.save();
