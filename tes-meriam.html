@@ -47,25 +47,36 @@
         // ==========================================
         // PENGATURAN SEL
         // ==========================================
-        const PIX = 16;             // ukuran sel dalam piksel simulasi
-        const ZOOM = 2;             // perbesaran tampilan
-        const SEL = PIX * ZOOM;     // ukuran satu sel di dunia (satuan layar)
-        const JARAK_SPAWN_SEL = 5;  // jarak sel baru di depan moncong, dalam jumlah sel
+        const PIX = 16;              // ukuran sel dalam piksel simulasi
+        const N = PIX * PIX;         // jumlah piksel per sel
+        const ZOOM = 2;              // perbesaran tampilan
+        const SEL = PIX * ZOOM;      // ukuran satu sel di layar
+        const JARAK_SPAWN_SEL = 5;   // jarak sel baru di depan moncong, dalam jumlah sel
 
         // Target awal: 2×2 sel, di kanan atas dari turret
         const TARGET_X = 4 * SEL;
         const TARGET_Y = -6 * SEL;
 
-        // Radar (kotak pendeteksi di sekitar sel)
+        // Radar
         const RADAR_MARGIN = SEL;
         const RADAR_DURASI = 0.3;
         const RADAR_TAMPIL = true;
 
-        // Fisika tabrakan peluru
-        const HIT_AWAL_FAKTOR = 0.65;   // kecepatan tersisa saat tabrakan pertama
-        const PENETRASI_FAKTOR = 0.99;  // kecepatan dikali ini tiap piksel yang ditembus
-        const KECEPATAN_MIN = 40;       // di bawah ini peluru berhenti
-        const PANAS_CHANCE = 0.5;       // peluang piksel tepi jadi panas (sisanya menguap)
+        // ==========================================
+        // FISIKA PELURU & TEKANAN
+        // ==========================================
+        const KETAHANAN_YAMATO = 40;      // jumlah piksel yang bisa dilalui sebelum peluru habis
+        const PENGURANGAN_TINGKAT = 0.9;  // tiap tingkat tekanan: kecepatan tinggal 90% (turun 10%)
+        const KECEPATAN_MIN = 10;         // di bawah ini peluru berhenti dan membentuk jamur
+        const GEPENG_MULAI = 100;         // di bawah kecepatan ini peluru mulai gepeng
+        const PANAS_CHANCE = 0.3;         // peluang piksel samping menguap (sisanya jadi panas tingkat 2)
+
+        // Tingkat panas 1 sampai 8 (indeks 0 tidak dipakai)
+        const TINGKAT_WARNA = [null, '#3f3f46', '#7f1d1d', '#dc2626', '#c2410c', '#fb923c', '#facc15', '#fef08a', '#ffffff'];
+        // Tingkat berikutnya saat mendingin
+        const TINGKAT_BERIKUT = [0, 0, 1, 2, 2, 4, 4, 6, 6];
+        // Lama bertahan di tiap tingkat sebelum turun (detik)
+        const TINGKAT_DURASI = [0, 1, 3, 2, 2, 1, 1, 1, 1];
 
         // ==========================================
         // PENGATURAN KALIBRASI (SILAKAN OTAK-ATIK)
@@ -80,7 +91,7 @@
 
         const FIRE_INTERVAL = 0.15;
 
-        const KECEPATAN_PELURU = 800;
+        const KECEPATAN_PELURU = 800;   // piksel per detik (Yamato)
         const PELURU_W = 7;
         const PELURU_H = 24;
 
@@ -104,9 +115,10 @@
         let bullets = [];
         let effects = [];
         let sels = [];
-        let lastShot = null;     // hasil tembakan terakhir untuk panel
+        let lastShot = null;
 
         let warnaDasar = null;
+        let warnaGosong = null;
         let sudahInit = false;
 
         const pointers = new Map();
@@ -115,31 +127,37 @@
         // ==========================================
         // SEL: DATA DAN PEMBUATAN
         // ==========================================
-        // pix[i]: 0 = kosong, 1 = padat, 2 = panas
+        // pix[i]: 0 = kosong (sudah menguap), 1 = padat
+        // heat[i]: tingkat panas 0-8 (0 = dingin, warna dasar)
+        // timer[i]: sisa waktu di tingkat sekarang sebelum turun
+        // gosong[i]: 1 jika pernah mencapai tingkat 8
         function siapkanWarna() {
             const oc = document.createElement('canvas');
             oc.width = PIX; oc.height = PIX;
             const octx = oc.getContext('2d');
             warnaDasar = [];
+            warnaGosong = [];
             if (imgSel.naturalWidth === 0) {
-                for (let i = 0; i < PIX * PIX; i++) warnaDasar.push('#888');
+                for (let i = 0; i < N; i++) { warnaDasar.push('#888'); warnaGosong.push('#444'); }
                 return;
             }
             octx.drawImage(imgSel, 0, 0, PIX, PIX);
             const d = octx.getImageData(0, 0, PIX, PIX).data;
-            for (let i = 0; i < PIX * PIX; i++) {
-                warnaDasar.push(`rgb(${d[i*4]},${d[i*4+1]},${d[i*4+2]})`);
+            for (let i = 0; i < N; i++) {
+                const r = d[i * 4], g = d[i * 4 + 1], b = d[i * 4 + 2];
+                warnaDasar.push(`rgb(${r},${g},${b})`);
+                warnaGosong.push(`rgb(${(r * 0.55) | 0},${(g * 0.55) | 0},${(b * 0.55) | 0})`);
             }
         }
 
         function buatSel(x, y) {
             return {
                 x, y,
-                pix: new Uint8Array(PIX * PIX).fill(1),
-                warna: warnaDasar,
-                panas: new Array(PIX * PIX),
-                sisa: PIX * PIX,
-                rusak: false,
+                pix: new Uint8Array(N).fill(1),
+                heat: new Uint8Array(N),
+                timer: new Float32Array(N),
+                gosong: new Uint8Array(N),
+                sisa: N,
                 radar: 0,
                 kena: 0
             };
@@ -162,15 +180,32 @@
         function hapusPiksel(c, idx) {
             if (c.pix[idx] === 0) return;
             c.pix[idx] = 0;
+            c.heat[idx] = 0;
             c.sisa--;
-            c.rusak = true;
         }
 
-        function jadikanPanas(c, idx) {
+        // Naikkan panas piksel ke tingkat tertentu (hanya naik, tidak turun)
+        function setHeat(c, idx, tingkat) {
             if (c.pix[idx] === 0) return;
-            c.pix[idx] = 2;
-            c.panas[idx] = ['#fb923c', '#facc15', '#fef3c7'][Math.floor(Math.random() * 3)];
-            c.rusak = true;
+            if (tingkat > c.heat[idx]) {
+                c.heat[idx] = tingkat;
+                c.timer[idx] = TINGKAT_DURASI[tingkat];
+            }
+            if (tingkat === 8) c.gosong[idx] = 1;
+        }
+
+        // Pendinginan bertahap: tiap piksel panas turun sesuai jadwal
+        function updateDingin(c, dt) {
+            for (let i = 0; i < N; i++) {
+                const h = c.heat[i];
+                if (h === 0) continue;
+                c.timer[i] -= dt;
+                if (c.timer[i] <= 0) {
+                    const berikut = TINGKAT_BERIKUT[h];
+                    c.heat[i] = berikut;
+                    if (berikut > 0) c.timer[i] = TINGKAT_DURASI[berikut];
+                }
+            }
         }
 
         function cariSel(x, y) {
@@ -222,13 +257,13 @@
 
             bullets.push({
                 x: m.x, y: m.y,
-                vx: Math.cos(currentAngle) * KECEPATAN_PELURU,
-                vy: Math.sin(currentAngle) * KECEPATAN_PELURU,
                 angle: currentAngle,
-                awal: KECEPATAN_PELURU,  // untuk panel
-                tembus: 0,               // jumlah piksel yang ditembus langsung
-                panas: 0,                // jumlah piksel yang jadi panas
-                dalam: false,
+                kecepatan: KECEPATAN_PELURU,  // integer, belakang koma dibuang
+                awal: KECEPATAN_PELURU,
+                ketahanan: KETAHANAN_YAMATO,
+                tingkat: 0,                   // tingkat tekanan tertinggi yang dicapai
+                tembus: 0,                    // jumlah piksel yang dilalui
+                panas: 0,                     // jumlah piksel samping yang kena panas
                 mati: false
             });
 
@@ -268,6 +303,25 @@
             }
         }
 
+        // Kepala jamur: panas menyebar ke kiri dan kanan jalur berhenti
+        function buatJamur(c, lx, ly, tingkat, sudut) {
+            const cs = Math.cos(sudut), sn = Math.sin(sudut);
+            for (let dy = -4; dy <= 4; dy++) {
+                for (let dx = -4; dx <= 4; dx++) {
+                    const x = lx + dx, y = ly + dy;
+                    if (x < 0 || y < 0 || x >= PIX || y >= PIX) continue;
+                    const along = dx * cs + dy * sn;       // searah peluru
+                    const perp = -dx * sn + dy * cs;       // tegak lurus peluru (kiri-kanan)
+                    const d = Math.hypot(along, perp * 0.6); // perp lebih lebar
+                    if (d > 4) continue;
+                    const idx = y * PIX + x;
+                    if (c.pix[idx] === 0) continue;
+                    const t = Math.max(1, tingkat - Math.floor(d * 1.5));
+                    setHeat(c, idx, t);
+                }
+            }
+        }
+
         function sentuh(b) {
             const c = cariSel(b.x, b.y);
             if (!c) return;
@@ -277,16 +331,15 @@
             const idx = ly * PIX + lx;
             if (c.pix[idx] === 0) return;
 
-            if (!b.dalam) {
-                b.dalam = true;
-                b.vx *= HIT_AWAL_FAKTOR;
-                b.vy *= HIT_AWAL_FAKTOR;
-            }
-
+            // Piksel di jalur peluru: menguap, tekanan naik, kecepatan turun
             hapusPiksel(c, idx);
             b.tembus++;
+            b.ketahanan--;
+            b.tingkat = Math.min(8, b.tingkat + 1);
+            b.kecepatan = Math.floor(b.kecepatan * PENGURANGAN_TINGKAT);
             c.kena = 0.15;
 
+            // Piksel samping jalur: sebagian menguap, sisanya panas maksimal tingkat 2
             for (let dy = -1; dy <= 1; dy++) {
                 for (let dx = -1; dx <= 1; dx++) {
                     if (dx === 0 && dy === 0) continue;
@@ -297,23 +350,27 @@
                     if (Math.random() < PANAS_CHANCE) {
                         hapusPiksel(c, nidx);
                     } else {
-                        jadikanPanas(c, nidx);
+                        setHeat(c, nidx, Math.min(2, b.tingkat));
                         b.panas++;
                     }
                 }
             }
 
-            b.vx *= PENETRASI_FAKTOR;
-            b.vy *= PENETRASI_FAKTOR;
-            if (Math.hypot(b.vx, b.vy) < KECEPATAN_MIN) b.mati = true;
+            // Peluru berhenti: ketahanan habis atau kecepatan terlalu rendah
+            if (b.ketahanan <= 0 || b.kecepatan < KECEPATAN_MIN) {
+                b.mati = true;
+                buatJamur(c, lx, ly, b.tingkat, b.angle);
+            }
         }
 
         function majuPeluru(b, dt) {
-            const langkah = Math.max(1, Math.ceil(Math.hypot(b.vx, b.vy) * dt));
-            const sub = dt / langkah;
+            const jarak = b.kecepatan * dt;
+            const langkah = Math.max(1, Math.ceil(jarak));
+            const sub = jarak / langkah;
+            const cs = Math.cos(b.angle), sn = Math.sin(b.angle);
             for (let i = 0; i < langkah; i++) {
-                b.x += b.vx * sub;
-                b.y += b.vy * sub;
+                b.x += cs * sub;
+                b.y += sn * sub;
                 cekRadar(b.x, b.y);
                 sentuh(b);
                 if (b.mati) return;
@@ -322,10 +379,12 @@
 
         function catatSelesai(b) {
             lastShot = {
-                awal: Math.floor(b.awal),
-                sisa: Math.floor(Math.hypot(b.vx, b.vy)),
+                awal: b.awal,
+                sisa: b.kecepatan,
                 tembus: b.tembus,
-                panas: b.panas
+                panas: b.panas,
+                tingkat: b.tingkat,
+                ketahanan: Math.max(0, b.ketahanan)
             };
         }
 
@@ -427,9 +486,12 @@
             for (let ly = 0; ly < PIX; ly++) {
                 for (let lx = 0; lx < PIX; lx++) {
                     const idx = ly * PIX + lx;
-                    const st = c.pix[idx];
-                    if (st === 0) continue;
-                    ctx.fillStyle = (st === 2) ? c.panas[idx] : c.warna[idx];
+                    if (c.pix[idx] === 0) continue;
+                    const h = c.heat[idx];
+                    let warna;
+                    if (h > 0) warna = TINGKAT_WARNA[h];
+                    else warna = c.gosong[idx] ? warnaGosong[idx] : warnaDasar[idx];
+                    ctx.fillStyle = warna;
                     ctx.fillRect(sx + lx * ZOOM, sy + ly * ZOOM, ZOOM, ZOOM);
                 }
             }
@@ -477,13 +539,15 @@
         function gambarPanel() {
             const baris = lastShot ? [
                 'Tembakan terakhir',
-                `Kecepatan awal : ${lastShot.awal} px/s`,
-                `Piksel tembus  : ${lastShot.tembus}`,
-                `Piksel panas   : ${lastShot.panas}`,
-                `Kecepatan sisa : ${lastShot.sisa} px/s`
+                `Kecepatan awal   : ${lastShot.awal} px/s`,
+                `Piksel tembus    : ${lastShot.tembus}`,
+                `Tingkat tertinggi: ${lastShot.tingkat}/8`,
+                `Piksel panas     : ${lastShot.panas}`,
+                `Ketahanan sisa   : ${lastShot.ketahanan}`,
+                `Kecepatan sisa   : ${lastShot.sisa} px/s`
             ] : ['Belum ada tembakan'];
 
-            const pad = 8, lh = 16, w = 210, h = pad * 2 + lh * baris.length;
+            const pad = 8, lh = 16, w = 230, h = pad * 2 + lh * baris.length;
             ctx.save();
             ctx.fillStyle = 'rgba(0, 0, 0, 0.6)';
             ctx.fillRect(10, 60, w, h);
@@ -522,12 +586,13 @@
                 tembak();
             }
 
-            for (const c of sels) {
-                c.radar = Math.max(0, c.radar - dt);
-                c.kena = Math.max(0, c.kena - dt);
-            }
-
             if (siap) {
+                for (const c of sels) {
+                    c.radar = Math.max(0, c.radar - dt);
+                    c.kena = Math.max(0, c.kena - dt);
+                    updateDingin(c, dt);
+                }
+
                 for (let i = bullets.length - 1; i >= 0; i--) {
                     const b = bullets[i];
                     majuPeluru(b, dt);
@@ -588,12 +653,18 @@
                 ctx.restore();
             }
 
+            // Peluru: makin gepeng saat kecepatannya tinggal sedikit
             if (imgPeluru.complete && imgPeluru.naturalWidth > 0) {
                 for (const b of bullets) {
+                    const gep = Math.max(0, Math.min(1,
+                        (GEPENG_MULAI - b.kecepatan) / (GEPENG_MULAI - KECEPATAN_MIN)));
+                    const w = PELURU_W * (1 + 3 * gep);
+                    const h = PELURU_H * (1 - 0.5 * gep);
+
                     ctx.save();
                     ctx.translate(toScreenX(b.x), toScreenY(b.y));
                     ctx.rotate(b.angle + Math.PI / 2);
-                    ctx.drawImage(imgPeluru, -PELURU_W / 2, -PELURU_H / 2, PELURU_W, PELURU_H);
+                    ctx.drawImage(imgPeluru, -w / 2, -h / 2, w, h);
 
                     ctx.beginPath();
                     ctx.moveTo(0, 0);
