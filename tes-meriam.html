@@ -72,14 +72,18 @@
         // FISIKA PELURU & TEKANAN
         // ==========================================
         const KETAHANAN_YAMATO = 40;
-        const PENGURANGAN_TINGKAT = 0.9;
+        const PENGURANGAN_TINGKAT = 0.8;  // tiap tingkat naik, kecepatan tinggal 80% (turun 20%)
+        const MAX_TINGKAT = 5;            // setelah tingkat ini, kecepatan tidak berkurang lagi
         const KECEPATAN_MIN = 10;
         const GEPENG_MULAI = 100;
         const PANAS_CHANCE = 0.3;
 
-        const TINGKAT_WARNA = [null, null, '#7f1d1d', '#dc2626', '#c2410c', '#fb923c', '#facc15', '#fef08a', '#ffffff'];
-        const TINGKAT_BERIKUT = [0, 0, 1, 2, 2, 4, 4, 6, 6];
-        const TINGKAT_DURASI = [0, 1, 3, 2, 2, 1, 1, 1, 1];
+        // Indeks = tingkat panas (0 = dingin, dipakai warna dasar sel)
+        const TINGKAT_WARNA = [null, '#7f1d1d', '#dc2626', '#fb923c', '#facc15', '#ffffff'];
+        // Tingkat berikutnya saat mendingin
+        const TINGKAT_BERIKUT = [0, 0, 1, 2, 2, 4];
+        // Lama bertahan di tiap tingkat sebelum turun (detik)
+        const TINGKAT_DURASI = [0, 3, 2, 1, 1, 1];
 
         // ==========================================
         // PENGATURAN KALIBRASI (SILAKAN OTAK-ATIK)
@@ -122,10 +126,8 @@
         let sels = [];
         let lastShot = null;
 
-        // Warna per piksel dalam bentuk [r, g, b]
         let RGB_DASAR = null;
         let RGB_GOSONG = null;
-        let RGB_TINGKAT1 = null;
         let RGB_TINGKAT = null;
         let warnaSiap = false;
         let sudahInit = false;
@@ -158,13 +160,11 @@
             RGB_TINGKAT = TINGKAT_WARNA.map(hexKeRgb);
             RGB_DASAR = [];
             RGB_GOSONG = [];
-            RGB_TINGKAT1 = [];
 
             if (imgSel.naturalWidth === 0) {
                 for (let i = 0; i < N; i++) {
                     RGB_DASAR.push([136, 136, 136]);
                     RGB_GOSONG.push([68, 68, 68]);
-                    RGB_TINGKAT1.push([90, 58, 58]);
                 }
                 warnaSiap = true;
                 return;
@@ -180,11 +180,6 @@
                 const r = d[i * 4], g = d[i * 4 + 1], b = d[i * 4 + 2];
                 RGB_DASAR.push([r, g, b]);
                 RGB_GOSONG.push([(r * 0.55) | 0, (g * 0.55) | 0, (b * 0.55) | 0]);
-                RGB_TINGKAT1.push([
-                    Math.round(r * 0.7 + 127 * 0.3),
-                    Math.round(g * 0.7 + 29 * 0.3),
-                    Math.round(b * 0.7 + 29 * 0.3)
-                ]);
             }
             warnaSiap = true;
         }
@@ -204,13 +199,13 @@
                 hot: 0,
                 radar: 0,
                 kena: 0,
-                dirty: true,          // perlu digambar ulang ke kanvas
+                dirty: true,
                 cache: kanvas,
                 cctx: kanvas.getContext('2d')
             };
         }
 
-        // Gambar ulang isi sel ke kanvasnya. Hanya dipanggil saat sel berubah.
+        // Gambar ulang isi sel ke kanvasnya. Hanya dipanggil saat sel kotor.
         function renderCache(c) {
             const img = c.cctx.createImageData(PIX, PIX);
             const d = img.data;
@@ -219,8 +214,7 @@
                 if (c.pix[i] === 0) { d[o + 3] = 0; continue; }
                 const h = c.heat[i];
                 let rgb;
-                if (h === 1) rgb = RGB_TINGKAT1[i];
-                else if (h > 1) rgb = RGB_TINGKAT[h];
+                if (h > 0) rgb = RGB_TINGKAT[h];
                 else rgb = c.gosong[i] ? RGB_GOSONG[i] : RGB_DASAR[i];
                 d[o] = rgb[0];
                 d[o + 1] = rgb[1];
@@ -260,7 +254,7 @@
                 c.timer[idx] = TINGKAT_DURASI[tingkat];
                 c.dirty = true;
             }
-            if (tingkat === 8 && !c.gosong[idx]) {
+            if (tingkat === MAX_TINGKAT && !c.gosong[idx]) {
                 c.gosong[idx] = 1;
                 c.dirty = true;
             }
@@ -429,8 +423,12 @@
             hapusPiksel(c, idx);
             b.tembus++;
             b.ketahanan--;
-            b.tingkat = Math.min(8, b.tingkat + 1);
-            b.kecepatan = Math.floor(b.kecepatan * PENGURANGAN_TINGKAT);
+
+            // Kecepatan turun hanya saat tingkat tekanan naik, sampai MAX_TINGKAT
+            if (b.tingkat < MAX_TINGKAT) {
+                b.tingkat++;
+                b.kecepatan = Math.floor(b.kecepatan * PENGURANGAN_TINGKAT);
+            }
             c.kena = 0.15;
 
             for (let dy = -1; dy <= 1; dy++) {
@@ -484,7 +482,7 @@
         // DIAGNOSA PENDINGINAN (hanya saat DEBUG tampil)
         // ==========================================
         function hitungStatus() {
-            const tingkat = new Array(9).fill(0);
+            const tingkat = new Array(MAX_TINGKAT + 1).fill(0);
             let gosong = 0, pakaiTimer = 0, total = 0;
             for (const c of sels) {
                 for (let i = 0; i < N; i++) {
@@ -509,7 +507,7 @@
                 '--- per tingkat ---',
                 `Dingin (0)  : ${s.tingkat[0]}`
             ];
-            for (let t = 1; t <= 8; t++) {
+            for (let t = 1; t <= MAX_TINGKAT; t++) {
                 baris.push(`Tingkat ${t}    : ${s.tingkat[t]}`);
             }
 
@@ -736,7 +734,7 @@
                 'Tembakan terakhir',
                 `Kecepatan awal   : ${lastShot.awal} px/s`,
                 `Piksel tembus    : ${lastShot.tembus}`,
-                `Tingkat tertinggi: ${lastShot.tingkat}/8`,
+                `Tingkat tertinggi: ${lastShot.tingkat}/${MAX_TINGKAT}`,
                 `Piksel panas     : ${lastShot.panas}`,
                 `Ketahanan sisa   : ${lastShot.ketahanan}`,
                 `Kecepatan sisa   : ${lastShot.sisa} px/s`
