@@ -15,7 +15,7 @@
     </style>
 </head>
 <body>
-    <div id="instruksi">Satu jari = putar | Dua jari = geser layar | Kanan bawah = tembak | Kiri bawah = sel</div>
+    <div id="instruksi">Satu jari = putar | Dua jari = geser layar | Kanan bawah = tembak | Kiri bawah = sel | +/− = zoom</div>
     <canvas id="gameCanvas"></canvas>
 
     <audio id="sfxTembak" src="tembakan.mp3" preload="auto"></audio>
@@ -61,6 +61,13 @@
         const RADAR_TAMPIL = true;
 
         // ==========================================
+        // ZOOM
+        // ==========================================
+        const ZOOM_MIN = 0.5;
+        const ZOOM_MAX = 2.5;
+        const ZOOM_LANGKAH = 1.25;
+
+        // ==========================================
         // FISIKA PELURU & TEKANAN
         // ==========================================
         const KETAHANAN_YAMATO = 40;
@@ -69,7 +76,8 @@
         const GEPENG_MULAI = 100;
         const PANAS_CHANCE = 0.3;
 
-        const TINGKAT_WARNA = [null, '#3f3f46', '#7f1d1d', '#dc2626', '#c2410c', '#fb923c', '#facc15', '#fef08a', '#ffffff'];
+        // Tingkat 1 tidak punya warna tetap, dihitung dari warna dasar sel
+        const TINGKAT_WARNA = [null, null, '#7f1d1d', '#dc2626', '#c2410c', '#fb923c', '#facc15', '#fef08a', '#ffffff'];
         const TINGKAT_BERIKUT = [0, 0, 1, 2, 2, 4, 4, 6, 6];
         const TINGKAT_DURASI = [0, 1, 3, 2, 2, 1, 1, 1, 1];
 
@@ -95,11 +103,13 @@
         const KILATAN_MAJU = 0.5;
 
         const TOMBOL_R = 48;
+        const TOMBOL_ZOOM_R = 22;
 
         // ==========================================
         // STATUS
         // ==========================================
         let camX = 0, camY = 0;
+        let skala = 1;                  // zoom tampilan (layar per piksel dunia)
         let currentAngle = -Math.PI / 2;
         let targetAngle = -Math.PI / 2;
 
@@ -114,6 +124,7 @@
 
         let warnaDasar = null;
         let warnaGosong = null;
+        let warnaTingkat1 = null;
         let sudahInit = false;
 
         const pointers = new Map();
@@ -122,18 +133,19 @@
         // ==========================================
         // SEL: DATA DAN PEMBUATAN
         // ==========================================
-        // pix[i]: 0 = kosong (sudah menguap), 1 = padat
-        // heat[i]: tingkat panas 0-8 (0 = dingin, warna dasar)
-        // timer[i]: sisa waktu di tingkat sekarang sebelum turun
-        // gosong[i]: 1 jika pernah mencapai tingkat 8
         function siapkanWarna() {
             const oc = document.createElement('canvas');
             oc.width = PIX; oc.height = PIX;
             const octx = oc.getContext('2d');
             warnaDasar = [];
             warnaGosong = [];
+            warnaTingkat1 = [];
             if (imgSel.naturalWidth === 0) {
-                for (let i = 0; i < N; i++) { warnaDasar.push('#888'); warnaGosong.push('#444'); }
+                for (let i = 0; i < N; i++) {
+                    warnaDasar.push('#888');
+                    warnaGosong.push('#444');
+                    warnaTingkat1.push('#5a3a3a');
+                }
                 return;
             }
             octx.drawImage(imgSel, 0, 0, PIX, PIX);
@@ -142,6 +154,11 @@
                 const r = d[i * 4], g = d[i * 4 + 1], b = d[i * 4 + 2];
                 warnaDasar.push(`rgb(${r},${g},${b})`);
                 warnaGosong.push(`rgb(${(r * 0.55) | 0},${(g * 0.55) | 0},${(b * 0.55) | 0})`);
+                // Tingkat 1: warna dasar dicampur sedikit merah tua (30%)
+                const mr = Math.round(r * 0.7 + 127 * 0.3);
+                const mg = Math.round(g * 0.7 + 29 * 0.3);
+                const mb = Math.round(b * 0.7 + 29 * 0.3);
+                warnaTingkat1.push(`rgb(${mr},${mg},${mb})`);
             }
         }
 
@@ -179,7 +196,6 @@
             c.sisa--;
         }
 
-        // Naikkan panas piksel ke tingkat tertentu (hanya naik)
         function setHeat(c, idx, tingkat) {
             if (c.pix[idx] === 0) return;
             if (tingkat > c.heat[idx]) {
@@ -189,7 +205,6 @@
             if (tingkat === 8) c.gosong[idx] = 1;
         }
 
-        // Pendinginan bertahap
         function updateDingin(c, dt) {
             for (let i = 0; i < N; i++) {
                 const h = c.heat[i];
@@ -224,16 +239,22 @@
             return { x: p.x + (ox * c - oy * s), y: p.y + (ox * s + oy * c) };
         }
 
-        function toScreenX(x) { return x - camX + canvas.width / 2; }
-        function toScreenY(y) { return y - camY + canvas.height / 2; }
+        function toScreenX(x) { return (x - camX) * skala + canvas.width / 2; }
+        function toScreenY(y) { return (y - camY) * skala + canvas.height / 2; }
 
         // ==========================================
         // TOMBOL
         // ==========================================
         function tombolFire() { return { x: canvas.width - 80, y: canvas.height - 110, r: TOMBOL_R }; }
         function tombolSpawn() { return { x: 80, y: canvas.height - 110, r: TOMBOL_R }; }
+        function tombolZoomIn() { return { x: canvas.width - 40, y: canvas.height / 2 - 40, r: TOMBOL_ZOOM_R }; }
+        function tombolZoomOut() { return { x: canvas.width - 40, y: canvas.height / 2 + 40, r: TOMBOL_ZOOM_R }; }
         function dalamTombol(p, t) {
             return (p.x - t.x) ** 2 + (p.y - t.y) ** 2 <= t.r * t.r;
+        }
+
+        function ubahZoom(arah) {
+            skala = Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, skala * (arah > 0 ? ZOOM_LANGKAH : 1 / ZOOM_LANGKAH)));
         }
 
         // ==========================================
@@ -298,7 +319,6 @@
             }
         }
 
-        // Kepala jamur: panas menyebar ke kiri dan kanan jalur berhenti
         function buatJamur(c, lx, ly, tingkat, sudut) {
             const cs = Math.cos(sudut), sn = Math.sin(sudut);
             for (let dy = -4; dy <= 4; dy++) {
@@ -445,7 +465,13 @@
             const p = posisi(e);
             const info = { x: p.x, y: p.y, role: 'aim' };
 
-            if (dalamTombol(p, tombolFire())) {
+            if (dalamTombol(p, tombolZoomIn())) {
+                ubahZoom(1);
+                info.role = 'zoom';
+            } else if (dalamTombol(p, tombolZoomOut())) {
+                ubahZoom(-1);
+                info.role = 'zoom';
+            } else if (dalamTombol(p, tombolFire())) {
                 info.role = 'fire';
                 tembak();
             } else if (dalamTombol(p, tombolSpawn())) {
@@ -478,8 +504,8 @@
                 const mx = aims.reduce((s, v) => s + v.x, 0) / aims.length;
                 const my = aims.reduce((s, v) => s + v.y, 0) / aims.length;
                 if (lastMid) {
-                    camX -= mx - lastMid.x;
-                    camY -= my - lastMid.y;
+                    camX -= (mx - lastMid.x) / skala;
+                    camY -= (my - lastMid.y) / skala;
                 }
                 lastMid = { x: mx, y: my };
             }
@@ -501,7 +527,8 @@
 
             ctx.strokeStyle = 'rgba(120, 130, 160, 0.08)';
             ctx.lineWidth = 1;
-            const halfW = canvas.width / 2, halfH = canvas.height / 2;
+            const halfW = canvas.width / 2 / skala;
+            const halfH = canvas.height / 2 / skala;
             const x0 = Math.floor((camX - halfW) / SEL) * SEL;
             const y0 = Math.floor((camY - halfH) / SEL) * SEL;
 
@@ -519,33 +546,38 @@
 
         function gambarSel(c) {
             const sx = toScreenX(c.x), sy = toScreenY(c.y);
-            if (sx + SEL < 0 || sy + SEL < 0 || sx > canvas.width || sy > canvas.height) return;
+            const size = SEL * skala;
+            if (sx + size < 0 || sy + size < 0 || sx > canvas.width || sy > canvas.height) return;
 
+            const P = ZOOM * skala;   // ukuran satu piksel simulasi di layar
             for (let ly = 0; ly < PIX; ly++) {
                 for (let lx = 0; lx < PIX; lx++) {
                     const idx = ly * PIX + lx;
                     if (c.pix[idx] === 0) continue;
                     const h = c.heat[idx];
                     let warna;
-                    if (h > 0) warna = TINGKAT_WARNA[h];
+                    if (h === 1) warna = warnaTingkat1[idx];
+                    else if (h > 1) warna = TINGKAT_WARNA[h];
                     else warna = c.gosong[idx] ? warnaGosong[idx] : warnaDasar[idx];
                     ctx.fillStyle = warna;
-                    ctx.fillRect(sx + lx * ZOOM, sy + ly * ZOOM, ZOOM, ZOOM);
+                    const x0 = Math.round(sx + lx * P), x1 = Math.round(sx + (lx + 1) * P);
+                    const y0 = Math.round(sy + ly * P), y1 = Math.round(sy + (ly + 1) * P);
+                    ctx.fillRect(x0, y0, x1 - x0, y1 - y0);
                 }
             }
 
             if (c.kena > 0) {
                 ctx.fillStyle = 'rgba(248, 113, 113, 0.25)';
-                ctx.fillRect(sx, sy, SEL, SEL);
+                ctx.fillRect(sx, sy, size, size);
             }
 
             if (RADAR_TAMPIL && c.radar > 0) {
+                const m = RADAR_MARGIN * skala;
                 ctx.save();
                 ctx.setLineDash([4, 3]);
                 ctx.strokeStyle = 'rgba(96, 165, 250, 0.7)';
                 ctx.lineWidth = 1;
-                ctx.strokeRect(sx - RADAR_MARGIN + 0.5, sy - RADAR_MARGIN + 0.5,
-                               SEL + 2 * RADAR_MARGIN - 1, SEL + 2 * RADAR_MARGIN - 1);
+                ctx.strokeRect(sx - m + 0.5, sy - m + 0.5, size + 2 * m - 1, size + 2 * m - 1);
                 ctx.restore();
             }
         }
@@ -572,6 +604,8 @@
             const aktifSpawn = [...pointers.values()].some(v => v.role === 'spawn');
             gambarLingkaran(tombolFire(), '#f87171', aktifFire, 'TEMBAK');
             gambarLingkaran(tombolSpawn(), '#4ade80', aktifSpawn, 'SEL');
+            gambarLingkaran(tombolZoomIn(), '#93c5fd', false, '+');
+            gambarLingkaran(tombolZoomOut(), '#93c5fd', false, '−');
         }
 
         function gambarPanel() {
@@ -657,12 +691,16 @@
             const cx = canvas.width / 2;
             const cy = canvas.height / 2;
 
+            // Alas, laras, dan rumah: ikut zoom, tetap di tengah layar
+            ctx.save();
+            ctx.translate(cx, cy);
+            ctx.scale(skala, skala);
+
             if (imgAlas.complete && imgAlas.naturalWidth > 0) {
-                ctx.drawImage(imgAlas, cx - imgAlas.width / 2, cy - imgAlas.height / 2);
+                ctx.drawImage(imgAlas, -imgAlas.width / 2, -imgAlas.height / 2);
             }
 
-            ctx.save();
-            ctx.translate(cx, cy + PIVOT_Y_OFFSET);
+            ctx.translate(0, PIVOT_Y_OFFSET);
             ctx.rotate(currentAngle + Math.PI / 2);
 
             if (imgLaras.complete && imgLaras.naturalWidth > 0) {
@@ -677,20 +715,22 @@
             }
             ctx.restore();
 
+            // Kilatan moncong
             for (const f of effects) {
                 if (!f.img.complete || f.img.naturalWidth === 0) continue;
                 const sx = toScreenX(f.x), sy = toScreenY(f.y);
-                const maju = f.img.naturalHeight * KILATAN_SKALA * KILATAN_MAJU;
+                const maju = f.img.naturalHeight * KILATAN_SKALA * KILATAN_MAJU * skala;
                 ctx.save();
                 ctx.translate(sx + Math.cos(f.angle) * maju, sy + Math.sin(f.angle) * maju);
                 ctx.rotate(f.angle + Math.PI / 2);
                 ctx.globalAlpha = Math.max(0, f.life / f.total);
-                const w = f.img.naturalWidth * KILATAN_SKALA;
-                const h = f.img.naturalHeight * KILATAN_SKALA;
+                const w = f.img.naturalWidth * KILATAN_SKALA * skala;
+                const h = f.img.naturalHeight * KILATAN_SKALA * skala;
                 ctx.drawImage(f.img, -w / 2, -h / 2, w, h);
                 ctx.restore();
             }
 
+            // Peluru: makin gepeng saat kecepatannya tinggal sedikit
             if (imgPeluru.complete && imgPeluru.naturalWidth > 0) {
                 for (const b of bullets) {
                     const gep = Math.max(0, Math.min(1,
@@ -701,6 +741,7 @@
                     ctx.save();
                     ctx.translate(toScreenX(b.x), toScreenY(b.y));
                     ctx.rotate(b.angle + Math.PI / 2);
+                    ctx.scale(skala, skala);
                     ctx.drawImage(imgPeluru, -w / 2, -h / 2, w, h);
 
                     ctx.beginPath();
