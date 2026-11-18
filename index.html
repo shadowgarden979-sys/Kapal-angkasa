@@ -14,10 +14,9 @@
     </style>
 </head>
 <body>
-    <div id="instruksi">Geser Jari = Putar | Tap Layar = Tembak</div>
+    <div id="instruksi">Geser Jari = Putar | Tap Layar = Tembak Beruntun</div>
     <canvas id="gameCanvas"></canvas>
 
-    <!-- Audio Tembakan -->
     <audio id="sfxTembak" src="tembakan.mp3" preload="auto"></audio>
 
     <script>
@@ -43,24 +42,29 @@
         // ==========================================
         // PENGATURAN KALIBRASI (UBAH ANGKA INI JIKA MASIH MELESET)
         // ==========================================
-        // 1. Jarak antar laras (kiri-tengah, tengah-kanan). Perbesar jika terlalu rapat.
+        // Jarak antar laras
         const JARAK_LARAS = 22; 
         
-        // 2. Posisi Y Laras (Geser atas/bawah). Angka lebih kecil = laras naik ke atas.
-        const OFFSET_Y_LARAS = -130; 
+        // Tarik laras lebih ke bawah (masuk ke dalam rumah)
+        const OFFSET_Y_LARAS = -115; 
+        
+        // Geser rumah meriam agar pas di tengah alas
+        const OFFSET_Y_RUMAH = -45; 
 
-        // 3. Posisi Y Rumah (Geser atas/bawah). Angka lebih kecil = rumah naik ke atas.
-        const OFFSET_Y_RUMAH = -50; 
-
-        // Ukuran Crop Rumah (sesuaikan jika gambar rumah terpotong)
+        // Crop ukuran rumah (sesuai gambar asli)
         const RUMAH_W = 98, RUMAH_H = 109;   
 
         // ==========================================
-        let currentAngle = -Math.PI / 2; // mulai menghadap atas
+        let currentAngle = -Math.PI / 2; 
         let targetAngle = -Math.PI / 2;
-        let recoil = 0;
-        let bullets = [];
         
+        // Sistem Recoil Bergantian
+        let recoilKiri = 0;
+        let recoilTengah = 0;
+        let recoilKanan = 0;
+        let giliranTembak = 0; // 0: Kiri, 1: Tengah, 2: Kanan
+
+        let bullets = [];
         const PELURU_W = 7;                  
         const PELURU_H = 24;                 
 
@@ -80,21 +84,36 @@
             sfxTembak.currentTime = 0;
             sfxTembak.play().catch(err => {});
 
-            const centerX = canvas.width / 2;
-            const centerY = canvas.height / 2 + 10; // Titik pivot sedikit di bawah tengah
+            const cx = canvas.width / 2;
+            const cy = canvas.height / 2; 
+            
+            // Hitung offset X lokal berdasarkan laras yang menembak
+            let offsetX = 0;
+            if (giliranTembak === 0) { offsetX = -JARAK_LARAS; recoilKiri = 15; }
+            if (giliranTembak === 1) { offsetX = 0; recoilTengah = 15; }
+            if (giliranTembak === 2) { offsetX = JARAK_LARAS; recoilKanan = 15; }
 
-            const spawnDist = 110; // Jarak ujung laras
-            const tipX = centerX + Math.cos(currentAngle) * spawnDist;
-            const tipY = centerY + Math.sin(currentAngle) * spawnDist;
+            // Hitung posisi ujung laras (berdasarkan rotasi)
+            // Ujung laras lokal ada di (offsetX, OFFSET_Y_LARAS - 110)
+            const localTipX = offsetX;
+            const localTipY = OFFSET_Y_LARAS - 100; // Panjang moncong
+            
+            // Rotasi titik ujung laras ke koordinat global
+            const cos = Math.cos(currentAngle + Math.PI / 2);
+            const sin = Math.sin(currentAngle + Math.PI / 2);
+            
+            const tipX = cx + (localTipX * cos - localTipY * sin);
+            const tipY = cy + (localTipX * sin + localTipY * cos);
 
             bullets.push({
                 x: tipX, y: tipY,
-                vx: Math.cos(currentAngle) * 15, // Kecepatan peluru Yamato
+                vx: Math.cos(currentAngle) * 15,
                 vy: Math.sin(currentAngle) * 15,
                 angle: currentAngle
             });
 
-            recoil = 15;
+            // Ganti giliran laras
+            giliranTembak = (giliranTembak + 1) % 3;
         }
 
         canvas.addEventListener('pointermove', handleMove);
@@ -106,7 +125,10 @@
             while (diff < -Math.PI) diff += Math.PI * 2;
             currentAngle += diff * 0.1;
 
-            if (recoil > 0) recoil -= 1;
+            // Animasi Recoil Kembali
+            if (recoilKiri > 0) recoilKiri -= 1;
+            if (recoilTengah > 0) recoilTengah -= 1;
+            if (recoilKanan > 0) recoilKanan -= 1;
 
             for (let i = bullets.length - 1; i >= 0; i--) {
                 bullets[i].x += bullets[i].vx;
@@ -127,32 +149,30 @@
                 ctx.drawImage(imgAlas, cx - imgAlas.width/2, cy - imgAlas.height/2);
             }
 
-            // 2. GAMBAR LARAS & RUMAH (Berputar Bersama)
+            // 2. GAMBAR LARAS & RUMAH (Berputar)
             ctx.save();
-            ctx.translate(cx, cy + 10); // Pindahkan pusat rotasi sedikit ke bawah
-            ctx.rotate(currentAngle + Math.PI / 2); // +PI/2 karena gambar aslinya menghadap atas
+            // Titik putar (Pivot) tepat di tengah layar
+            ctx.translate(cx, cy); 
+            ctx.rotate(currentAngle + Math.PI / 2); 
 
-            // Gambar Laras (Di bawah rumah)
+            // Gambar Laras (Dengan Recoil Masing-masing)
             if (imgLaras.complete && imgLaras.naturalWidth > 0) {
-                const recoilOffset = recoil; // Mundur ke bawah (positif Y)
-                
                 // Laras Kiri
-                ctx.drawImage(imgLaras, -imgLaras.width/2 - JARAK_LARAS, OFFSET_Y_LARAS + recoilOffset);
+                ctx.drawImage(imgLaras, -imgLaras.width/2 - JARAK_LARAS, OFFSET_Y_LARAS + recoilKiri);
                 // Laras Tengah
-                ctx.drawImage(imgLaras, -imgLaras.width/2, OFFSET_Y_LARAS + recoilOffset);
+                ctx.drawImage(imgLaras, -imgLaras.width/2, OFFSET_Y_LARAS + recoilTengah);
                 // Laras Kanan
-                ctx.drawImage(imgLaras, -imgLaras.width/2 + JARAK_LARAS, OFFSET_Y_LARAS + recoilOffset);
+                ctx.drawImage(imgLaras, -imgLaras.width/2 + JARAK_LARAS, OFFSET_Y_LARAS + recoilKanan);
             }
 
             // Gambar Rumah Meriam (Menutupi pangkal laras)
             if (imgRumah.complete && imgRumah.naturalWidth > 0) {
-                // Crop 98x109 dari gambar asli
                 ctx.drawImage(imgRumah, 0, 76, RUMAH_W, RUMAH_H,
                               -RUMAH_W/2, OFFSET_Y_RUMAH, RUMAH_W, RUMAH_H);
             }
             ctx.restore();
 
-            // 3. GAMBAR PELURU
+            // 3. GAMBAR PELURU & EKOR
             if (imgPeluru.complete && imgPeluru.naturalWidth > 0) {
                 for (let b of bullets) {
                     ctx.save();
@@ -160,7 +180,7 @@
                     ctx.rotate(b.angle + Math.PI / 2); 
                     ctx.drawImage(imgPeluru, -PELURU_W/2, -PELURU_H/2, PELURU_W, PELURU_H);
                     
-                    // Efek Ekor Peluru (Trail)
+                    // Ekor
                     ctx.beginPath();
                     ctx.moveTo(0, 0);
                     ctx.lineTo(0, 30);
