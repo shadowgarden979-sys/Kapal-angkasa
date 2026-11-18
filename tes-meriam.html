@@ -122,9 +122,12 @@
         let sels = [];
         let lastShot = null;
 
-        let warnaDasar = null;
-        let warnaGosong = null;
-        let warnaTingkat1 = null;
+        // Warna per piksel dalam bentuk [r, g, b]
+        let RGB_DASAR = null;
+        let RGB_GOSONG = null;
+        let RGB_TINGKAT1 = null;
+        let RGB_TINGKAT = null;
+        let warnaSiap = false;
         let sudahInit = false;
 
         let debugTampil = false;
@@ -142,38 +145,55 @@
             return lama * 0.9 + baru * 0.1;
         }
 
+        function hexKeRgb(hex) {
+            if (!hex) return null;
+            const n = parseInt(hex.slice(1), 16);
+            return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
+        }
+
         // ==========================================
         // SEL: DATA DAN PEMBUATAN
         // ==========================================
         function siapkanWarna() {
+            RGB_TINGKAT = TINGKAT_WARNA.map(hexKeRgb);
+            RGB_DASAR = [];
+            RGB_GOSONG = [];
+            RGB_TINGKAT1 = [];
+
+            if (imgSel.naturalWidth === 0) {
+                for (let i = 0; i < N; i++) {
+                    RGB_DASAR.push([136, 136, 136]);
+                    RGB_GOSONG.push([68, 68, 68]);
+                    RGB_TINGKAT1.push([90, 58, 58]);
+                }
+                warnaSiap = true;
+                return;
+            }
+
             const oc = document.createElement('canvas');
             oc.width = PIX; oc.height = PIX;
             const octx = oc.getContext('2d');
-            warnaDasar = [];
-            warnaGosong = [];
-            warnaTingkat1 = [];
-            if (imgSel.naturalWidth === 0) {
-                for (let i = 0; i < N; i++) {
-                    warnaDasar.push('#888');
-                    warnaGosong.push('#444');
-                    warnaTingkat1.push('#5a3a3a');
-                }
-                return;
-            }
             octx.drawImage(imgSel, 0, 0, PIX, PIX);
             const d = octx.getImageData(0, 0, PIX, PIX).data;
+
             for (let i = 0; i < N; i++) {
                 const r = d[i * 4], g = d[i * 4 + 1], b = d[i * 4 + 2];
-                warnaDasar.push(`rgb(${r},${g},${b})`);
-                warnaGosong.push(`rgb(${(r * 0.55) | 0},${(g * 0.55) | 0},${(b * 0.55) | 0})`);
-                const mr = Math.round(r * 0.7 + 127 * 0.3);
-                const mg = Math.round(g * 0.7 + 29 * 0.3);
-                const mb = Math.round(b * 0.7 + 29 * 0.3);
-                warnaTingkat1.push(`rgb(${mr},${mg},${mb})`);
+                RGB_DASAR.push([r, g, b]);
+                RGB_GOSONG.push([(r * 0.55) | 0, (g * 0.55) | 0, (b * 0.55) | 0]);
+                RGB_TINGKAT1.push([
+                    Math.round(r * 0.7 + 127 * 0.3),
+                    Math.round(g * 0.7 + 29 * 0.3),
+                    Math.round(b * 0.7 + 29 * 0.3)
+                ]);
             }
+            warnaSiap = true;
         }
 
+        // Kanvas kecil per sel, berisi gambar sel pada resolusi simulasi (16×16)
         function buatSel(x, y) {
+            const kanvas = document.createElement('canvas');
+            kanvas.width = PIX;
+            kanvas.height = PIX;
             return {
                 x, y,
                 pix: new Uint8Array(N).fill(1),
@@ -183,13 +203,37 @@
                 sisa: N,
                 hot: 0,
                 radar: 0,
-                kena: 0
+                kena: 0,
+                dirty: true,          // perlu digambar ulang ke kanvas
+                cache: kanvas,
+                cctx: kanvas.getContext('2d')
             };
+        }
+
+        // Gambar ulang isi sel ke kanvasnya. Hanya dipanggil saat sel berubah.
+        function renderCache(c) {
+            const img = c.cctx.createImageData(PIX, PIX);
+            const d = img.data;
+            for (let i = 0; i < N; i++) {
+                const o = i * 4;
+                if (c.pix[i] === 0) { d[o + 3] = 0; continue; }
+                const h = c.heat[i];
+                let rgb;
+                if (h === 1) rgb = RGB_TINGKAT1[i];
+                else if (h > 1) rgb = RGB_TINGKAT[h];
+                else rgb = c.gosong[i] ? RGB_GOSONG[i] : RGB_DASAR[i];
+                d[o] = rgb[0];
+                d[o + 1] = rgb[1];
+                d[o + 2] = rgb[2];
+                d[o + 3] = 255;
+            }
+            c.cctx.putImageData(img, 0, 0);
+            c.dirty = false;
         }
 
         function initSiap() {
             if (!imgSel.complete) return false;
-            if (!warnaDasar) siapkanWarna();
+            if (!warnaSiap) siapkanWarna();
             if (!sudahInit) {
                 sudahInit = true;
                 for (let j = 0; j < 2; j++) {
@@ -206,6 +250,7 @@
             c.pix[idx] = 0;
             c.heat[idx] = 0;
             c.sisa--;
+            c.dirty = true;
         }
 
         function setHeat(c, idx, tingkat) {
@@ -213,11 +258,15 @@
             if (tingkat > c.heat[idx]) {
                 c.heat[idx] = tingkat;
                 c.timer[idx] = TINGKAT_DURASI[tingkat];
+                c.dirty = true;
             }
-            if (tingkat === 8) c.gosong[idx] = 1;
+            if (tingkat === 8 && !c.gosong[idx]) {
+                c.gosong[idx] = 1;
+                c.dirty = true;
+            }
         }
 
-        // Mengembalikan jumlah piksel yang sedang panas di sel ini
+        // Pendinginan: hanya tingkat yang berubah yang menandai sel kotor
         function updateDingin(c, dt) {
             let hot = 0;
             for (let i = 0; i < N; i++) {
@@ -229,6 +278,7 @@
                     const berikut = TINGKAT_BERIKUT[h];
                     c.heat[i] = berikut;
                     if (berikut > 0) c.timer[i] = TINGKAT_DURASI[berikut];
+                    c.dirty = true;
                 }
             }
             c.hot = hot;
@@ -320,7 +370,7 @@
         }
 
         function spawnSel() {
-            if (!warnaDasar) return;
+            if (!warnaSiap) return;
             const m = muzzleWorld(0, LARAS_OFFSET_Y);
             const cs = Math.cos(currentAngle), sn = Math.sin(currentAngle);
 
@@ -630,27 +680,14 @@
             ctx.stroke();
         }
 
+        // Sel digambar dari kanvasnya. Kanvas hanya diperbarui kalau sel kotor.
         function gambarSel(c) {
             const sx = toScreenX(c.x), sy = toScreenY(c.y);
             const size = SEL * skala;
             if (sx + size < 0 || sy + size < 0 || sx > canvas.width || sy > canvas.height) return;
 
-            const P = ZOOM * skala;
-            for (let ly = 0; ly < PIX; ly++) {
-                for (let lx = 0; lx < PIX; lx++) {
-                    const idx = ly * PIX + lx;
-                    if (c.pix[idx] === 0) continue;
-                    const h = c.heat[idx];
-                    let warna;
-                    if (h === 1) warna = warnaTingkat1[idx];
-                    else if (h > 1) warna = TINGKAT_WARNA[h];
-                    else warna = c.gosong[idx] ? warnaGosong[idx] : warnaDasar[idx];
-                    ctx.fillStyle = warna;
-                    const x0 = Math.round(sx + lx * P), x1 = Math.round(sx + (lx + 1) * P);
-                    const y0 = Math.round(sy + ly * P), y1 = Math.round(sy + (ly + 1) * P);
-                    ctx.fillRect(x0, y0, x1 - x0, y1 - y0);
-                }
-            }
+            if (c.dirty) renderCache(c);
+            ctx.drawImage(c.cache, sx, sy, size, size);
 
             if (c.kena > 0) {
                 ctx.fillStyle = 'rgba(248, 113, 113, 0.25)';
@@ -772,7 +809,6 @@
                 }
                 sels = sels.filter(c => c.sisa > 0);
 
-                // Hitung sel aktif dan tidur (hanya untuk tampilan)
                 let aktif = 0, tidur = 0;
                 for (const c of sels) {
                     if (c.radar > 0 || c.kena > 0 || c.hot > 0) aktif++;
