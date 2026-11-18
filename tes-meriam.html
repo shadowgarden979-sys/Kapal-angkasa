@@ -106,12 +106,6 @@
         const TOMBOL_ZOOM_R = 22;
 
         // ==========================================
-        // PENGATURAN PROFIL (hanya untuk mengukur)
-        // ==========================================
-        const PROFIL_TAMPIL = true;   // panel angka performa
-        const DIAGNOSA_TAMPIL = true; // panel diagnosa panas (matikan untuk mengukur bebannya)
-
-        // ==========================================
         // STATUS
         // ==========================================
         let camX = 0, camY = 0;
@@ -133,13 +127,15 @@
         let warnaTingkat1 = null;
         let sudahInit = false;
 
+        let debugTampil = false;
+
         const pointers = new Map();
         let lastMid = null;
 
-        // Angka profil (dihaluskan supaya tidak loncat-loncat)
         const profil = {
             fps: 0, frames: 0, lastFps: performance.now(),
-            update: 0, draw: 0, dingin: 0, sel: 0, panel: 0
+            update: 0, draw: 0, dingin: 0, sel: 0, panel: 0,
+            aktif: 0, tidur: 0
         };
 
         function haluskan(lama, baru) {
@@ -185,6 +181,7 @@
                 timer: new Float32Array(N),
                 gosong: new Uint8Array(N),
                 sisa: N,
+                hot: 0,
                 radar: 0,
                 kena: 0
             };
@@ -220,10 +217,13 @@
             if (tingkat === 8) c.gosong[idx] = 1;
         }
 
+        // Mengembalikan jumlah piksel yang sedang panas di sel ini
         function updateDingin(c, dt) {
+            let hot = 0;
             for (let i = 0; i < N; i++) {
                 const h = c.heat[i];
                 if (h === 0) continue;
+                hot++;
                 c.timer[i] -= dt;
                 if (c.timer[i] <= 0) {
                     const berikut = TINGKAT_BERIKUT[h];
@@ -231,6 +231,8 @@
                     if (berikut > 0) c.timer[i] = TINGKAT_DURASI[berikut];
                 }
             }
+            c.hot = hot;
+            return hot;
         }
 
         function cariSel(x, y) {
@@ -264,8 +266,15 @@
         function tombolSpawn() { return { x: 80, y: canvas.height - 110, r: TOMBOL_R }; }
         function tombolZoomIn() { return { x: canvas.width - 40, y: canvas.height / 2 - 40, r: TOMBOL_ZOOM_R }; }
         function tombolZoomOut() { return { x: canvas.width - 40, y: canvas.height / 2 + 40, r: TOMBOL_ZOOM_R }; }
+        function tombolDebug() { return { x: canvas.width / 2, y: canvas.height - 24, w: 110, h: 28 }; }
+
         function dalamTombol(p, t) {
             return (p.x - t.x) ** 2 + (p.y - t.y) ** 2 <= t.r * t.r;
+        }
+
+        function dalamKotak(p, k) {
+            return p.x >= k.x - k.w / 2 && p.x <= k.x + k.w / 2 &&
+                   p.y >= k.y - k.h / 2 && p.y <= k.y + k.h / 2;
         }
 
         function ubahZoom(arah) {
@@ -422,7 +431,7 @@
         }
 
         // ==========================================
-        // DIAGNOSA PENDINGINAN
+        // DIAGNOSA PENDINGINAN (hanya saat DEBUG tampil)
         // ==========================================
         function hitungStatus() {
             const tingkat = new Array(9).fill(0);
@@ -468,7 +477,7 @@
         }
 
         // ==========================================
-        // PANEL PROFIL
+        // PANEL PROFIL (selalu tampil)
         // ==========================================
         function totalPiksel() {
             let t = 0;
@@ -481,6 +490,8 @@
                 'PROFIL',
                 `FPS          : ${profil.fps}`,
                 `Sel          : ${sels.length}`,
+                `Sel aktif    : ${profil.aktif}`,
+                `Sel tidur    : ${profil.tidur}`,
                 `Piksel       : ${totalPiksel()}`,
                 `Update (ms)  : ${profil.update.toFixed(2)}`,
                 `Gambar (ms)  : ${profil.draw.toFixed(2)}`,
@@ -489,7 +500,7 @@
                 `  - panel    : ${profil.panel.toFixed(2)}`
             ];
             const pad = 8, lh = 15, w = 200, h = pad * 2 + lh * baris.length;
-            const x = 10, y = 200;
+            const x = 10, y = 60;
             ctx.save();
             ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
             ctx.fillRect(x, y, w, h);
@@ -498,6 +509,23 @@
             ctx.textAlign = 'left';
             ctx.textBaseline = 'top';
             baris.forEach((t, i) => ctx.fillText(t, x + pad, y + pad + i * lh));
+            ctx.restore();
+        }
+
+        function gambarTombolDebug() {
+            const t = tombolDebug();
+            ctx.save();
+            ctx.globalAlpha = debugTampil ? 0.9 : 0.5;
+            ctx.fillStyle = '#000';
+            ctx.strokeStyle = '#fde68a';
+            ctx.lineWidth = 2;
+            ctx.fillRect(t.x - t.w / 2, t.y - t.h / 2, t.w, t.h);
+            ctx.strokeRect(t.x - t.w / 2, t.y - t.h / 2, t.w, t.h);
+            ctx.fillStyle = '#fde68a';
+            ctx.font = 'bold 12px monospace';
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.fillText(debugTampil ? 'DEBUG: ON' : 'DEBUG', t.x, t.y);
             ctx.restore();
         }
 
@@ -520,7 +548,10 @@
             const p = posisi(e);
             const info = { x: p.x, y: p.y, role: 'aim' };
 
-            if (dalamTombol(p, tombolZoomIn())) {
+            if (dalamKotak(p, tombolDebug())) {
+                debugTampil = !debugTampil;
+                info.role = 'debug';
+            } else if (dalamTombol(p, tombolZoomIn())) {
                 ubahZoom(1);
                 info.role = 'zoom';
             } else if (dalamTombol(p, tombolZoomOut())) {
@@ -663,7 +694,7 @@
             gambarLingkaran(tombolZoomOut(), '#93c5fd', false, '−');
         }
 
-        function gambarPanel() {
+        function gambarPanelTembakan() {
             const baris = lastShot ? [
                 'Tembakan terakhir',
                 `Kecepatan awal   : ${lastShot.awal} px/s`,
@@ -675,14 +706,15 @@
             ] : ['Belum ada tembakan'];
 
             const pad = 8, lh = 16, w = 230, h = pad * 2 + lh * baris.length;
+            const x = 10, y = 60 + 170;
             ctx.save();
             ctx.fillStyle = 'rgba(0, 0, 0, 0.6)';
-            ctx.fillRect(10, 60, w, h);
+            ctx.fillRect(x, y, w, h);
             ctx.fillStyle = '#e5e7eb';
             ctx.font = '12px monospace';
             ctx.textAlign = 'left';
             ctx.textBaseline = 'top';
-            baris.forEach((t, i) => ctx.fillText(t, 10 + pad, 60 + pad + i * lh));
+            baris.forEach((t, i) => ctx.fillText(t, x + pad, y + pad + i * lh));
             ctx.restore();
         }
 
@@ -696,7 +728,6 @@
             lastTime = now;
             if (dt > 0.05) dt = 0.05;
 
-            // FPS: hitung frame per detik
             profil.frames++;
             if (now - profil.lastFps >= 1000) {
                 profil.fps = profil.frames;
@@ -740,6 +771,15 @@
                     }
                 }
                 sels = sels.filter(c => c.sisa > 0);
+
+                // Hitung sel aktif dan tidur (hanya untuk tampilan)
+                let aktif = 0, tidur = 0;
+                for (const c of sels) {
+                    if (c.radar > 0 || c.kena > 0 || c.hot > 0) aktif++;
+                    else tidur++;
+                }
+                profil.aktif = aktif;
+                profil.tidur = tidur;
             }
 
             for (let i = effects.length - 1; i >= 0; i--) {
@@ -824,11 +864,14 @@
             }
 
             gambarTombol();
-            gambarPanel();
+            gambarTombolDebug();
 
             const tPanel0 = performance.now();
-            if (DIAGNOSA_TAMPIL) gambarDiagnosa();
-            if (PROFIL_TAMPIL) gambarProfil();
+            gambarProfil();
+            if (debugTampil) {
+                gambarPanelTembakan();
+                gambarDiagnosa();
+            }
             profil.panel = haluskan(profil.panel, performance.now() - tPanel0);
 
             profil.draw = haluskan(profil.draw, performance.now() - tDraw0);
