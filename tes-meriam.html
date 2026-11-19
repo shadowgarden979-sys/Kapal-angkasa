@@ -47,12 +47,20 @@
         // ==========================================
         // SKALA
         // ==========================================
-        const METER_PER_SEL = 16;         // 1 sel = 16 meter
-        const PIX = 16;                   // 1 sel = 16 piksel simulasi
-        const METER_PER_PIKSEL = METER_PER_SEL / PIX;   // = 1 meter per piksel
+        const METER_PER_SEL = 16;
+        const PIX = 16;
+        const METER_PER_PIKSEL = METER_PER_SEL / PIX;
         const N = PIX * PIX;
         const ZOOM = 2;
         const SEL = PIX * ZOOM;
+
+        // ==========================================
+        // CHUNK (kelompok sel 8×8 dengan satu kanvas)
+        // ==========================================
+        const CHUNK_SEL = 8;                 // jumlah sel per sisi dalam satu chunk
+        const CHUNK_W = CHUNK_SEL * SEL;     // lebar chunk di dunia (piksel layar pada zoom 1)
+        const CHUNK_PX = CHUNK_SEL * PIX;    // lebar kanvas chunk (piksel simulasi)
+
         const JARAK_SPAWN_SEL = 5;
         const MAKS_TUMPUK = 4;
 
@@ -74,17 +82,15 @@
         // FISIKA PELURU & TEKANAN
         // ==========================================
         const KETAHANAN_YAMATO = 40;
-        const PENGURANGAN_TINGKAT = 0.8;   // tiap tingkat naik, kecepatan tinggal 80% (turun 20%)
-        const MAX_TINGKAT = 5;             // setelah tingkat ini, kecepatan tidak berkurang lagi
+        const PENGURANGAN_TINGKAT = 0.8;
+        const MAX_TINGKAT = 5;
         const KECEPATAN_MIN = 10;
         const GEPENG_MULAI = 100;
         const PANAS_CHANCE = 0.3;
 
         // Indeks = tingkat panas (0 = dingin, dipakai warna dasar sel)
         const TINGKAT_WARNA = [null, '#7f1d1d', '#dc2626', '#fb923c', '#facc15', '#ffffff'];
-        // Tingkat berikutnya saat mendingin
         const TINGKAT_BERIKUT = [0, 0, 1, 2, 2, 4];
-        // Lama bertahan di tiap tingkat sebelum turun (detik)
         const TINGKAT_DURASI = [0, 3, 2, 1, 1, 1];
 
         // ==========================================
@@ -100,7 +106,7 @@
 
         const FIRE_INTERVAL = 0.15;
 
-        const KECEPATAN_PELURU = 800;   // piksel per detik (= 800 m/s dengan 1 piksel = 1 meter)
+        const KECEPATAN_PELURU = 800;
         const PELURU_W = 7;
         const PELURU_H = 24;
 
@@ -126,6 +132,7 @@
         let bullets = [];
         let effects = [];
         let sels = [];
+        let chunks = new Map();
         let lastShot = null;
 
         let RGB_DASAR = null;
@@ -156,7 +163,7 @@
         }
 
         // ==========================================
-        // SEL: DATA DAN PEMBUATAN
+        // WARNA
         // ==========================================
         function siapkanWarna() {
             RGB_TINGKAT = TINGKAT_WARNA.map(hexKeRgb);
@@ -186,15 +193,84 @@
             warnaSiap = true;
         }
 
-        // Kanvas kecil per sel, berisi gambar sel pada resolusi simulasi (16×16)
-        // panas: daftar indeks piksel yang sedang panas (hanya itu yang diproses saat pendinginan)
-        // inList: penanda supaya satu piksel tidak masuk daftar dua kali
+        // ==========================================
+        // CHUNK: kanvas satu per 8×8 sel
+        // ==========================================
+        function kunciChunk(cx, cy) {
+            return cx + ',' + cy;
+        }
+
+        function ambilChunk(x, y) {
+            const cx = Math.floor(x / CHUNK_W);
+            const cy = Math.floor(y / CHUNK_W);
+            const key = kunciChunk(cx, cy);
+            let ch = chunks.get(key);
+            if (!ch) {
+                const kanvas = document.createElement('canvas');
+                kanvas.width = CHUNK_PX;
+                kanvas.height = CHUNK_PX;
+                const cctx = kanvas.getContext('2d');
+                ch = {
+                    key,
+                    x: cx * CHUNK_W,
+                    y: cy * CHUNK_W,
+                    cells: [],
+                    canvas: kanvas,
+                    cctx,
+                    img: cctx.createImageData(CHUNK_PX, CHUNK_PX),
+                    dirty: true
+                };
+                chunks.set(key, ch);
+            }
+            return ch;
+        }
+
+        // Gambar ulang seluruh chunk. Hanya dipanggil saat chunk kotor.
+        function renderChunk(ch) {
+            const d = ch.img.data;
+            d.fill(0);
+
+            for (const c of ch.cells) {
+                for (let i = 0; i < N; i++) {
+                    if (c.pix[i] === 0) continue;
+
+                    const lx = i % PIX;
+                    const ly = (i - lx) / PIX;
+                    const px = c.ox * PIX + lx;
+                    const py = c.oy * PIX + ly;
+                    const o = (py * CHUNK_PX + px) * 4;
+
+                    const h = c.heat[i];
+                    let rgb;
+                    if (h > 0) rgb = RGB_TINGKAT[h];
+                    else rgb = c.gosong[i] ? RGB_GOSONG[i] : RGB_DASAR[i];
+
+                    d[o] = rgb[0];
+                    d[o + 1] = rgb[1];
+                    d[o + 2] = rgb[2];
+                    d[o + 3] = 255;
+                }
+            }
+
+            ch.cctx.putImageData(ch.img, 0, 0);
+            ch.dirty = false;
+        }
+
+        // Tandai chunk tempat sel berada sebagai kotor
+        function tandai(c) {
+            c.chunk.dirty = true;
+        }
+
+        // ==========================================
+        // SEL
+        // ==========================================
         function buatSel(x, y) {
-            const kanvas = document.createElement('canvas');
-            kanvas.width = PIX;
-            kanvas.height = PIX;
-            return {
+            const ch = ambilChunk(x, y);
+            const sel = {
                 x, y,
+                chunk: ch,
+                ox: Math.round((x - ch.x) / SEL),   // posisi sel di dalam chunk (0..7)
+                oy: Math.round((y - ch.y) / SEL),
                 pix: new Uint8Array(N).fill(1),
                 heat: new Uint8Array(N),
                 timer: new Float32Array(N),
@@ -204,31 +280,20 @@
                 sisa: N,
                 hot: 0,
                 radar: 0,
-                kena: 0,
-                dirty: true,
-                cache: kanvas,
-                cctx: kanvas.getContext('2d')
+                kena: 0
             };
+            ch.cells.push(sel);
+            ch.dirty = true;
+            return sel;
         }
 
-        // Gambar ulang isi sel ke kanvasnya. Hanya dipanggil saat sel kotor.
-        function renderCache(c) {
-            const img = c.cctx.createImageData(PIX, PIX);
-            const d = img.data;
-            for (let i = 0; i < N; i++) {
-                const o = i * 4;
-                if (c.pix[i] === 0) { d[o + 3] = 0; continue; }
-                const h = c.heat[i];
-                let rgb;
-                if (h > 0) rgb = RGB_TINGKAT[h];
-                else rgb = c.gosong[i] ? RGB_GOSONG[i] : RGB_DASAR[i];
-                d[o] = rgb[0];
-                d[o + 1] = rgb[1];
-                d[o + 2] = rgb[2];
-                d[o + 3] = 255;
-            }
-            c.cctx.putImageData(img, 0, 0);
-            c.dirty = false;
+        // Keluarkan sel yang sudah habis dari chunk dan daftar utama
+        function lepasSel(c) {
+            const ch = c.chunk;
+            const i = ch.cells.indexOf(c);
+            if (i >= 0) ch.cells.splice(i, 1);
+            ch.dirty = true;
+            if (ch.cells.length === 0) chunks.delete(ch.key);
         }
 
         function initSiap() {
@@ -248,31 +313,29 @@
         function hapusPiksel(c, idx) {
             if (c.pix[idx] === 0) return;
             c.pix[idx] = 0;
-            c.heat[idx] = 0;     // tetap di daftar panas sampai dibersihkan saat pendinginan
+            c.heat[idx] = 0;
             c.sisa--;
-            c.dirty = true;
+            tandai(c);
         }
 
         function setHeat(c, idx, tingkat) {
             if (c.pix[idx] === 0) return;
             if (tingkat > c.heat[idx]) {
-                // Piksel yang baru panas masuk daftar pendinginan
                 if (c.heat[idx] === 0 && !c.inList[idx]) {
                     c.inList[idx] = 1;
                     c.panas.push(idx);
                 }
                 c.heat[idx] = tingkat;
                 c.timer[idx] = TINGKAT_DURASI[tingkat];
-                c.dirty = true;
+                tandai(c);
             }
             if (tingkat === MAX_TINGKAT && !c.gosong[idx]) {
                 c.gosong[idx] = 1;
-                c.dirty = true;
+                tandai(c);
             }
         }
 
-        // Pendinginan: hanya memproses daftar piksel panas.
-        // Piksel yang sudah dingin atau sudah menguap dikeluarkan dari daftar.
+        // Pendinginan: hanya memproses daftar piksel panas
         function updateDingin(c, dt) {
             const list = c.panas;
             for (let k = list.length - 1; k >= 0; k--) {
@@ -290,7 +353,7 @@
                 if (c.timer[idx] <= 0) {
                     const berikut = TINGKAT_BERIKUT[h];
                     c.heat[idx] = berikut;
-                    c.dirty = true;
+                    tandai(c);
                     if (berikut > 0) {
                         c.timer[idx] = TINGKAT_DURASI[berikut];
                     } else {
@@ -305,7 +368,9 @@
         }
 
         function cariSel(x, y) {
-            for (const c of sels) {
+            const ch = chunks.get(kunciChunk(Math.floor(x / CHUNK_W), Math.floor(y / CHUNK_W)));
+            if (!ch) return null;
+            for (const c of ch.cells) {
                 if (x >= c.x && x < c.x + SEL && y >= c.y && y < c.y + SEL) return c;
             }
             return null;
@@ -449,7 +514,6 @@
             b.tembus++;
             b.ketahanan--;
 
-            // Kecepatan turun hanya saat tingkat tekanan naik, sampai MAX_TINGKAT
             if (b.tingkat < MAX_TINGKAT) {
                 b.tingkat++;
                 b.kecepatan = Math.floor(b.kecepatan * PENGURANGAN_TINGKAT);
@@ -564,6 +628,7 @@
                 `Skala        : 1 sel = ${METER_PER_SEL} m`,
                 `FPS          : ${profil.fps}`,
                 `Sel          : ${sels.length}`,
+                `Chunk        : ${chunks.size}`,
                 `Sel aktif    : ${profil.aktif}`,
                 `Sel tidur    : ${profil.tidur}`,
                 `Piksel       : ${totalPiksel()}`,
@@ -704,14 +769,24 @@
             ctx.stroke();
         }
 
-        // Sel digambar dari kanvasnya. Kanvas hanya diperbarui kalau sel kotor.
-        function gambarSel(c) {
+        // Gambar semua chunk yang terlihat: satu drawImage per chunk
+        function gambarChunks() {
+            const ukuranLayar = CHUNK_W * skala;
+            for (const ch of chunks.values()) {
+                const sx = toScreenX(ch.x), sy = toScreenY(ch.y);
+                if (sx + ukuranLayar < 0 || sy + ukuranLayar < 0 ||
+                    sx > canvas.width || sy > canvas.height) continue;
+
+                if (ch.dirty) renderChunk(ch);
+                ctx.drawImage(ch.canvas, sx, sy, ukuranLayar, ukuranLayar);
+            }
+        }
+
+        // Efek di atas sel: kedip kena dan kotak radar
+        function gambarEfekSel(c) {
             const sx = toScreenX(c.x), sy = toScreenY(c.y);
             const size = SEL * skala;
             if (sx + size < 0 || sy + size < 0 || sx > canvas.width || sy > canvas.height) return;
-
-            if (c.dirty) renderCache(c);
-            ctx.drawImage(c.cache, sx, sy, size, size);
 
             if (c.kena > 0) {
                 ctx.fillStyle = 'rgba(248, 113, 113, 0.25)';
@@ -831,7 +906,14 @@
                         bullets.splice(i, 1);
                     }
                 }
-                sels = sels.filter(c => c.sisa > 0);
+
+                // Buang sel yang sudah habis dari daftar dan dari chunk
+                const sisaSel = [];
+                for (const c of sels) {
+                    if (c.sisa > 0) sisaSel.push(c);
+                    else lepasSel(c);
+                }
+                sels = sisaSel;
 
                 let aktif = 0, tidur = 0;
                 for (const c of sels) {
@@ -856,7 +938,8 @@
 
             if (siap) {
                 const tSel0 = performance.now();
-                for (const c of sels) gambarSel(c);
+                gambarChunks();
+                for (const c of sels) gambarEfekSel(c);
                 profil.sel = haluskan(profil.sel, performance.now() - tSel0);
             }
 
