@@ -73,18 +73,26 @@
         const RADAR_TAMPIL = true;
 
         // ==========================================
+        // KAPAL RAKSASA (bertahap)
+        // ==========================================
+        const KAPAL_W = 150;                 // lebar dalam sel
+        const KAPAL_H = 110;                 // tinggi dalam sel (lonjong)
+        const SPAWN_PER_FRAME = 256;         // sel yang dibuat per frame (sekitar 4 chunk)
+        const KAPAL_JARAK_X = 1500;          // pusat kapal di kanan kamera, dalam piksel layar pada zoom 1
+
+        // ==========================================
         // ZOOM & TINGKAT DETAIL (LOD)
         // ==========================================
-        const ZOOM_MIN = 0.07;           // cukup untuk melihat kapal 150 sel utuh
+        const ZOOM_MIN = 0.03;
         const ZOOM_MAX = 2.5;
         const ZOOM_LANGKAH = 1.25;
 
-        // Jumlah sel horizontal yang terlihat di layar untuk tiap tingkat
-        const LOD_DEKAT_MAKS = 24;       // di bawah ini: piksel satu per satu
-        const LOD_SEDANG_MAKS = 75;      // di bawah ini: satu gambar per chunk
-        const LOD_JAUH_MAKS = 160;       // di bawah ini: satu kotak per chunk, di atasnya: ikon
+        // Ambang berdasarkan ukuran satu sel di layar dalam piksel
+        const LOD_DEKAT_PX = 12;      // di atas ini: piksel satu per satu
+        const LOD_SEDANG_PX = 4.5;    // di atas ini: satu gambar per chunk
+        const LOD_JAUH_PX = 1.5;      // di atas ini: siluet chunk dan meriam, di bawahnya: ikon
 
-        const KLUSTER_INTERVAL = 500;    // ms, hitung ulang kelompok chunk
+        const KLUSTER_INTERVAL = 500;
 
         // ==========================================
         // FISIKA PELURU & TEKANAN
@@ -97,7 +105,6 @@
         const PANAS_CHANCE = 0.3;
         const JARAK_EFEKTIF_PX = 52000;
 
-        // Indeks = tingkat panas (0 = dingin, dipakai warna dasar sel)
         const TINGKAT_WARNA = [null, '#7f1d1d', '#dc2626', '#fb923c', '#facc15', '#ffffff'];
         const TINGKAT_BERIKUT = [0, 0, 1, 2, 2, 4];
         const TINGKAT_DURASI = [0, 3, 2, 1, 1, 1];
@@ -154,6 +161,13 @@
         let gridTileSize = 0;
         let gridPattern = null;
 
+        let siluetAlas = null;
+        let siluetTurret = null;
+        let siluetSiap = false;
+
+        let antreanSpawn = [];
+        let antreanPos = 0;
+
         let klusterList = [];
         let klusterWaktu = -Infinity;
         let levelSekarang = 'dekat';
@@ -188,18 +202,20 @@
         // ==========================================
         // TINGKAT DETAIL
         // ==========================================
+        // Dihitung dari ukuran satu sel di layar (piksel), bukan jumlah sel.
         function hitungLevel() {
-            selTampak = canvas.width / (SEL * skala);
-            if (selTampak <= LOD_DEKAT_MAKS) return 'dekat';
-            if (selTampak <= LOD_SEDANG_MAKS) return 'sedang';
-            if (selTampak <= LOD_JAUH_MAKS) return 'jauh';
+            const selPx = SEL * skala;
+            selTampak = Math.min(canvas.width, canvas.height) / selPx;
+            if (selPx >= LOD_DEKAT_PX) return 'dekat';
+            if (selPx >= LOD_SEDANG_PX) return 'sedang';
+            if (selPx >= LOD_JAUH_PX) return 'jauh';
             return 'strategis';
         }
 
         function labelLevel(level) {
             if (level === 'dekat') return 'dekat (piksel)';
             if (level === 'sedang') return 'sedang (chunk)';
-            if (level === 'jauh') return 'jauh (kotak)';
+            if (level === 'jauh') return 'jauh (siluet)';
             return 'strategis (ikon)';
         }
 
@@ -219,6 +235,47 @@
             g.fillRect(0, 0, 1, size);
             g.fillRect(0, 0, size, 1);
             gridPattern = ctx.createPattern(gridTile, 'repeat');
+        }
+
+        // ==========================================
+        // SILUET (dibuat sekali saat gambar meriam siap)
+        // ==========================================
+        function pastikanSiluet() {
+            if (siluetSiap) return;
+            if (!imgAlas.complete || !imgRumah.complete || !imgLaras.complete) return;
+            if (imgAlas.naturalWidth === 0 || imgLaras.naturalWidth === 0) return;
+
+            // Alas
+            const aw = imgAlas.naturalWidth, ah = imgAlas.naturalHeight;
+            const sa = Math.max(aw, ah) + 8;
+            siluetAlas = document.createElement('canvas');
+            siluetAlas.width = sa;
+            siluetAlas.height = sa;
+            const ga = siluetAlas.getContext('2d');
+            ga.drawImage(imgAlas, sa / 2 - aw / 2, sa / 2 - ah / 2);
+            ga.globalCompositeOperation = 'source-in';
+            ga.fillStyle = '#cbd5e1';
+            ga.fillRect(0, 0, sa, sa);
+
+            // Meriam: laras dan rumah, pivot di tengah kanvas
+            const st = 320;
+            siluetTurret = document.createElement('canvas');
+            siluetTurret.width = st;
+            siluetTurret.height = st;
+            const gt = siluetTurret.getContext('2d');
+            gt.translate(st / 2, st / 2);
+            const lw = imgLaras.naturalWidth;
+            gt.drawImage(imgLaras, -lw / 2 - JARAK_LARAS, LARAS_OFFSET_Y);
+            gt.drawImage(imgLaras, -lw / 2, LARAS_OFFSET_Y);
+            gt.drawImage(imgLaras, -lw / 2 + JARAK_LARAS, LARAS_OFFSET_Y);
+            gt.drawImage(imgRumah, 0, 76, RUMAH_W, RUMAH_H,
+                         -RUMAH_W / 2, -RUMAH_H / 2, RUMAH_W, RUMAH_H);
+            gt.setTransform(1, 0, 0, 1, 0, 0);
+            gt.globalCompositeOperation = 'source-in';
+            gt.fillStyle = '#cbd5e1';
+            gt.fillRect(0, 0, st, st);
+
+            siluetSiap = true;
         }
 
         // ==========================================
@@ -253,7 +310,7 @@
         }
 
         // ==========================================
-        // CHUNK: kanvas satu per 8×8 sel
+        // CHUNK: kanvas detail 8×8 sel, dan siluet 8×8 piksel
         // ==========================================
         function kunciChunk(cx, cy) {
             return cx + ',' + cy;
@@ -269,6 +326,12 @@
                 kanvas.width = CHUNK_PX;
                 kanvas.height = CHUNK_PX;
                 const cctx = kanvas.getContext('2d');
+
+                const siluet = document.createElement('canvas');
+                siluet.width = CHUNK_SEL;
+                siluet.height = CHUNK_SEL;
+                const sctx = siluet.getContext('2d');
+
                 ch = {
                     key,
                     gx: cx,
@@ -279,6 +342,9 @@
                     canvas: kanvas,
                     cctx,
                     img: cctx.createImageData(CHUNK_PX, CHUNK_PX),
+                    siluetCanvas: siluet,
+                    siluetCtx: sctx,
+                    siluetImg: sctx.createImageData(CHUNK_SEL, CHUNK_SEL),
                     dirty: true,
                     aktif: false,
                     terakhirGambar: -Infinity
@@ -288,13 +354,19 @@
             return ch;
         }
 
+        // Gambar ulang isi chunk: detail sel dan siluetnya sekaligus
         function renderChunk(ch) {
             const d = ch.img.data;
             d.fill(0);
+            const s = ch.siluetImg.data;
+            s.fill(0);
 
             for (const c of ch.cells) {
+                let ada = false, panas = false;
+
                 for (let i = 0; i < N; i++) {
                     if (c.pix[i] === 0) continue;
+                    ada = true;
 
                     const lx = i % PIX;
                     const ly = (i - lx) / PIX;
@@ -303,6 +375,7 @@
                     const o = (py * CHUNK_PX + px) * 4;
 
                     const h = c.heat[i];
+                    if (h > 0) panas = true;
                     let rgb;
                     if (h > 0) rgb = RGB_TINGKAT[h];
                     else rgb = c.gosong[i] ? RGB_GOSONG[i] : RGB_DASAR[i];
@@ -312,9 +385,20 @@
                     d[o + 2] = rgb[2];
                     d[o + 3] = 255;
                 }
+
+                if (ada) {
+                    const so = (c.oy * CHUNK_SEL + c.ox) * 4;
+                    if (panas) {
+                        s[so] = 251; s[so + 1] = 146; s[so + 2] = 60;
+                    } else {
+                        s[so] = 148; s[so + 1] = 163; s[so + 2] = 184;
+                    }
+                    s[so + 3] = 255;
+                }
             }
 
             ch.cctx.putImageData(ch.img, 0, 0);
+            ch.siluetCtx.putImageData(ch.siluetImg, 0, 0);
             ch.dirty = false;
         }
 
@@ -436,9 +520,48 @@
         }
 
         // ==========================================
+        // KAPAL RAKSASA (dibuat bertahap)
+        // ==========================================
+        function antreKapalRaksasa() {
+            if (antreanSpawn.length > 0 && antreanPos < antreanSpawn.length) return;
+
+            antreanSpawn = [];
+            antreanPos = 0;
+
+            const x0 = Math.floor((camX + KAPAL_JARAK_X) / SEL) * SEL - Math.floor(KAPAL_W / 2) * SEL;
+            const y0 = Math.floor(camY / SEL) * SEL - Math.floor(KAPAL_H / 2) * SEL;
+            const cx = KAPAL_W / 2, cy = KAPAL_H / 2;
+            const rx = KAPAL_W / 2, ry = KAPAL_H / 2;
+
+            for (let j = 0; j < KAPAL_H; j++) {
+                for (let i = 0; i < KAPAL_W; i++) {
+                    const dx = (i + 0.5 - cx) / rx;
+                    const dy = (j + 0.5 - cy) / ry;
+                    if (dx * dx + dy * dy <= 1) {
+                        antreanSpawn.push({ x: x0 + i * SEL, y: y0 + j * SEL });
+                    }
+                }
+            }
+        }
+
+        function prosesAntreKapal() {
+            if (antreanPos >= antreanSpawn.length) {
+                if (antreanSpawn.length > 0) {
+                    antreanSpawn = [];
+                    antreanPos = 0;
+                }
+                return;
+            }
+            const batas = Math.min(antreanSpawn.length, antreanPos + SPAWN_PER_FRAME);
+            for (; antreanPos < batas; antreanPos++) {
+                const p = antreanSpawn[antreanPos];
+                sels.push(buatSel(p.x, p.y));
+            }
+        }
+
+        // ==========================================
         // KELOMPOK CHUNK (dasar ikon strategis)
         // ==========================================
-        // Chunk yang bersentuhan sisi dianggap satu kelompok (satu calon kapal)
         function hitungKluster() {
             const sudah = new Set();
             const hasil = [];
@@ -501,6 +624,7 @@
         function tombolZoomIn() { return { x: canvas.width - 40, y: canvas.height / 2 - 40, r: TOMBOL_ZOOM_R }; }
         function tombolZoomOut() { return { x: canvas.width - 40, y: canvas.height / 2 + 40, r: TOMBOL_ZOOM_R }; }
         function tombolDebug() { return { x: canvas.width / 2, y: canvas.height - 24, w: 110, h: 28 }; }
+        function tombolRaksasa() { return { x: canvas.width / 2 - 130, y: canvas.height - 24, w: 110, h: 28 }; }
 
         function dalamTombol(p, t) {
             return (p.x - t.x) ** 2 + (p.y - t.y) ** 2 <= t.r * t.r;
@@ -738,14 +862,16 @@
         }
 
         function gambarProfil() {
+            const sisaAntre = Math.max(0, antreanSpawn.length - antreanPos);
             const baris = [
                 'PROFIL',
                 `Skala        : 1 sel = ${METER_PER_SEL} m`,
-                `Zoom         : ${skala.toFixed(2)}`,
+                `Zoom         : ${skala.toFixed(3)}`,
                 `Level        : ${labelLevel(levelSekarang)}`,
                 `Sel tampak   : ${selTampak.toFixed(0)}`,
                 `FPS          : ${profil.fps}`,
                 `Sel          : ${sels.length}`,
+                `Antre spawn  : ${sisaAntre}`,
                 `Chunk        : ${chunks.size}`,
                 `Chunk aktif  : ${profil.chunkAktif}`,
                 `Sel radar    : ${profil.radar}`,
@@ -772,10 +898,9 @@
             ctx.restore();
         }
 
-        function gambarTombolDebug() {
-            const t = tombolDebug();
+        function gambarTombolKotak(t, label, aktif) {
             ctx.save();
-            ctx.globalAlpha = debugTampil ? 0.9 : 0.5;
+            ctx.globalAlpha = aktif ? 0.9 : 0.5;
             ctx.fillStyle = '#000';
             ctx.strokeStyle = '#fde68a';
             ctx.lineWidth = 2;
@@ -785,8 +910,13 @@
             ctx.font = 'bold 12px monospace';
             ctx.textAlign = 'center';
             ctx.textBaseline = 'middle';
-            ctx.fillText(debugTampil ? 'DEBUG: ON' : 'DEBUG', t.x, t.y);
+            ctx.fillText(label, t.x, t.y);
             ctx.restore();
+        }
+
+        function gambarTombolDebug() {
+            gambarTombolKotak(tombolDebug(), debugTampil ? 'DEBUG: ON' : 'DEBUG', debugTampil);
+            gambarTombolKotak(tombolRaksasa(), 'RAKSASA', antreanPos < antreanSpawn.length);
         }
 
         // ==========================================
@@ -811,6 +941,9 @@
             if (dalamKotak(p, tombolDebug())) {
                 debugTampil = !debugTampil;
                 info.role = 'debug';
+            } else if (dalamKotak(p, tombolRaksasa())) {
+                antreKapalRaksasa();
+                info.role = 'raksasa';
             } else if (dalamTombol(p, tombolZoomIn())) {
                 ubahZoom(1);
                 info.role = 'zoom';
@@ -871,7 +1004,6 @@
             ctx.fillStyle = '#07080d';
             ctx.fillRect(0, 0, canvas.width, canvas.height);
 
-            // Grid hanya untuk tingkat dekat dan sedang
             if (level !== 'dekat' && level !== 'sedang') return;
 
             siapkanGrid();
@@ -887,25 +1019,25 @@
             ctx.restore();
         }
 
+        // Dekat dan sedang: detail chunk. Jauh: siluet chunk. Strategis: tidak ada chunk.
         function gambarChunks(sekarang, level) {
-            const ukuranLayar = CHUNK_W * skala;
-            const detailPenuh = (level === 'dekat' || level === 'sedang');
+            if (level === 'strategis') return;
 
+            const ukuranLayar = CHUNK_W * skala;
             for (const ch of chunks.values()) {
                 const sx = toScreenX(ch.x), sy = toScreenY(ch.y);
                 if (sx + ukuranLayar < 0 || sy + ukuranLayar < 0 ||
                     sx > canvas.width || sy > canvas.height) continue;
 
-                if (detailPenuh) {
-                    if (ch.dirty && sekarang - ch.terakhirGambar >= INTERVAL_RENDER_CHUNK) {
-                        renderChunk(ch);
-                        ch.terakhirGambar = sekarang;
-                    }
-                    ctx.drawImage(ch.canvas, sx, sy, ukuranLayar, ukuranLayar);
+                if (ch.dirty && sekarang - ch.terakhirGambar >= INTERVAL_RENDER_CHUNK) {
+                    renderChunk(ch);
+                    ch.terakhirGambar = sekarang;
+                }
+
+                if (level === 'jauh') {
+                    ctx.drawImage(ch.siluetCanvas, sx, sy, ukuranLayar, ukuranLayar);
                 } else {
-                    // Jauh dan strategis: satu kotak warna per chunk, tanpa detail sel
-                    ctx.fillStyle = 'rgba(160, 168, 184, 0.55)';
-                    ctx.fillRect(sx, sy, ukuranLayar, ukuranLayar);
+                    ctx.drawImage(ch.canvas, sx, sy, ukuranLayar, ukuranLayar);
                 }
             }
         }
@@ -986,7 +1118,7 @@
             ] : ['Belum ada tembakan'];
 
             const pad = 8, lh = 16, w = 230, h = pad * 2 + lh * baris.length;
-            const x = 10, y = 60 + 230;
+            const x = 10, y = 60 + 250;
             ctx.save();
             ctx.fillStyle = 'rgba(0, 0, 0, 0.6)';
             ctx.fillRect(x, y, w, h);
@@ -1017,6 +1149,7 @@
 
             const tUpdate0 = performance.now();
             const siap = initSiap();
+            pastikanSiluet();
 
             levelSekarang = hitungLevel();
             if (now - klusterWaktu >= KLUSTER_INTERVAL) {
@@ -1040,6 +1173,8 @@
             }
 
             if (siap) {
+                prosesAntreKapal();
+
                 const tDingin0 = performance.now();
                 for (const c of sels) {
                     c.radar = Math.max(0, c.radar - dt);
@@ -1097,13 +1232,14 @@
 
             // ----- GAMBAR -----
             const tDraw0 = performance.now();
+            const detail = (levelSekarang === 'dekat' || levelSekarang === 'sedang');
 
             gambarLatar(levelSekarang);
 
             if (siap) {
                 const tSel0 = performance.now();
                 gambarChunks(now, levelSekarang);
-                if (levelSekarang === 'dekat' || levelSekarang === 'sedang') {
+                if (detail) {
                     for (const c of sels) gambarEfekSel(c);
                 } else if (levelSekarang === 'strategis') {
                     gambarKluster();
@@ -1114,28 +1250,43 @@
             const cx = canvas.width / 2;
             const cy = canvas.height / 2;
 
-            ctx.save();
-            ctx.translate(cx, cy);
-            ctx.scale(skala, skala);
+            if (detail || !siluetSiap) {
+                // Gambar detail meriam (PNG)
+                ctx.save();
+                ctx.translate(cx, cy);
+                ctx.scale(skala, skala);
 
-            if (imgAlas.complete && imgAlas.naturalWidth > 0) {
-                ctx.drawImage(imgAlas, -imgAlas.width / 2, -imgAlas.height / 2);
+                if (imgAlas.complete && imgAlas.naturalWidth > 0) {
+                    ctx.drawImage(imgAlas, -imgAlas.width / 2, -imgAlas.height / 2);
+                }
+
+                ctx.translate(0, PIVOT_Y_OFFSET);
+                ctx.rotate(currentAngle + Math.PI / 2);
+
+                if (imgLaras.complete && imgLaras.naturalWidth > 0) {
+                    ctx.drawImage(imgLaras, -imgLaras.width / 2 - JARAK_LARAS, LARAS_OFFSET_Y + recoilKiri);
+                    ctx.drawImage(imgLaras, -imgLaras.width / 2, LARAS_OFFSET_Y + recoilTengah);
+                    ctx.drawImage(imgLaras, -imgLaras.width / 2 + JARAK_LARAS, LARAS_OFFSET_Y + recoilKanan);
+                }
+
+                if (imgRumah.complete && imgRumah.naturalWidth > 0) {
+                    ctx.drawImage(imgRumah, 0, 76, RUMAH_W, RUMAH_H,
+                                  -RUMAH_W / 2, -RUMAH_H / 2, RUMAH_W, RUMAH_H);
+                }
+                ctx.restore();
+            } else {
+                // Gambar siluet meriam (jauh dan strategis)
+                ctx.save();
+                ctx.translate(cx, cy);
+                ctx.scale(skala, skala);
+
+                ctx.drawImage(siluetAlas, -siluetAlas.width / 2, -siluetAlas.height / 2);
+
+                ctx.translate(0, PIVOT_Y_OFFSET);
+                ctx.rotate(currentAngle + Math.PI / 2);
+                ctx.drawImage(siluetTurret, -siluetTurret.width / 2, -siluetTurret.height / 2);
+                ctx.restore();
             }
-
-            ctx.translate(0, PIVOT_Y_OFFSET);
-            ctx.rotate(currentAngle + Math.PI / 2);
-
-            if (imgLaras.complete && imgLaras.naturalWidth > 0) {
-                ctx.drawImage(imgLaras, -imgLaras.width / 2 - JARAK_LARAS, LARAS_OFFSET_Y + recoilKiri);
-                ctx.drawImage(imgLaras, -imgLaras.width / 2, LARAS_OFFSET_Y + recoilTengah);
-                ctx.drawImage(imgLaras, -imgLaras.width / 2 + JARAK_LARAS, LARAS_OFFSET_Y + recoilKanan);
-            }
-
-            if (imgRumah.complete && imgRumah.naturalWidth > 0) {
-                ctx.drawImage(imgRumah, 0, 76, RUMAH_W, RUMAH_H,
-                              -RUMAH_W / 2, -RUMAH_H / 2, RUMAH_W, RUMAH_H);
-            }
-            ctx.restore();
 
             for (const f of effects) {
                 if (!f.img.complete || f.img.naturalWidth === 0) continue;
@@ -1145,12 +1296,13 @@
                 ctx.translate(sx + Math.cos(f.angle) * maju, sy + Math.sin(f.angle) * maju);
                 ctx.rotate(f.angle + Math.PI / 2);
                 ctx.globalAlpha = Math.max(0, f.life / f.total);
-                const w = f.img.naturalWidth * KILATAN_SKALA * skala;
-                const h = f.img.naturalHeight * KILATAN_SKALA * skala;
+                const w = Math.max(f.img.naturalWidth * KILATAN_SKALA * skala, 3);
+                const h = Math.max(f.img.naturalHeight * KILATAN_SKALA * skala, 4);
                 ctx.drawImage(f.img, -w / 2, -h / 2, w, h);
                 ctx.restore();
             }
 
+            // Peluru: ukuran minimum di layar supaya tetap terlihat saat zoom keluar
             if (imgPeluru.complete && imgPeluru.naturalWidth > 0) {
                 for (const b of bullets) {
                     const bx = toScreenX(b.x), by = toScreenY(b.y);
@@ -1158,20 +1310,20 @@
 
                     const gep = Math.max(0, Math.min(1,
                         (GEPENG_MULAI - b.kecepatan) / (GEPENG_MULAI - KECEPATAN_MIN)));
-                    const w = PELURU_W * (1 + 3 * gep);
-                    const h = PELURU_H * (1 - 0.5 * gep);
+                    const w = Math.max(PELURU_W * skala, 3) * (1 + 3 * gep);
+                    const h = Math.max(PELURU_H * skala, 7) * (1 - 0.5 * gep);
+                    const ekor = Math.max(30 * skala, 8);
 
                     ctx.save();
                     ctx.translate(bx, by);
                     ctx.rotate(b.angle + Math.PI / 2);
-                    ctx.scale(skala, skala);
                     ctx.drawImage(imgPeluru, -w / 2, -h / 2, w, h);
 
                     ctx.beginPath();
                     ctx.moveTo(0, 0);
-                    ctx.lineTo(0, 30);
-                    ctx.strokeStyle = 'rgba(253, 224, 71, 0.5)';
-                    ctx.lineWidth = 3;
+                    ctx.lineTo(0, ekor);
+                    ctx.strokeStyle = 'rgba(253, 224, 71, 0.6)';
+                    ctx.lineWidth = Math.max(3 * skala, 2);
                     ctx.stroke();
                     ctx.restore();
                 }
