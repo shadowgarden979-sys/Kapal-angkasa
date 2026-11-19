@@ -57,9 +57,9 @@
         // ==========================================
         // CHUNK (kelompok sel 8×8 dengan satu kanvas)
         // ==========================================
-        const CHUNK_SEL = 8;                 // jumlah sel per sisi dalam satu chunk
-        const CHUNK_W = CHUNK_SEL * SEL;     // lebar chunk di dunia (piksel layar pada zoom 1)
-        const CHUNK_PX = CHUNK_SEL * PIX;    // lebar kanvas chunk (piksel simulasi)
+        const CHUNK_SEL = 8;
+        const CHUNK_W = CHUNK_SEL * SEL;
+        const CHUNK_PX = CHUNK_SEL * PIX;
 
         const JARAK_SPAWN_SEL = 5;
         const MAKS_TUMPUK = 4;
@@ -87,6 +87,7 @@
         const KECEPATAN_MIN = 10;
         const GEPENG_MULAI = 100;
         const PANAS_CHANCE = 0.3;
+        const JARAK_EFEKTIF_PX = 52000;   // peluru meleset dihapus setelah jarak ini (piksel)
 
         // Indeks = tingkat panas (0 = dingin, dipakai warna dasar sel)
         const TINGKAT_WARNA = [null, '#7f1d1d', '#dc2626', '#fb923c', '#facc15', '#ffffff'];
@@ -149,7 +150,7 @@
         const profil = {
             fps: 0, frames: 0, lastFps: performance.now(),
             update: 0, draw: 0, dingin: 0, sel: 0, panel: 0,
-            aktif: 0, tidur: 0
+            aktif: 0, tidur: 0, chunkAktif: 0
         };
 
         function haluskan(lama, baru) {
@@ -218,14 +219,14 @@
                     canvas: kanvas,
                     cctx,
                     img: cctx.createImageData(CHUNK_PX, CHUNK_PX),
-                    dirty: true
+                    dirty: true,
+                    aktif: false
                 };
                 chunks.set(key, ch);
             }
             return ch;
         }
 
-        // Gambar ulang seluruh chunk. Hanya dipanggil saat chunk kotor.
         function renderChunk(ch) {
             const d = ch.img.data;
             d.fill(0);
@@ -256,7 +257,6 @@
             ch.dirty = false;
         }
 
-        // Tandai chunk tempat sel berada sebagai kotor
         function tandai(c) {
             c.chunk.dirty = true;
         }
@@ -269,7 +269,7 @@
             const sel = {
                 x, y,
                 chunk: ch,
-                ox: Math.round((x - ch.x) / SEL),   // posisi sel di dalam chunk (0..7)
+                ox: Math.round((x - ch.x) / SEL),
                 oy: Math.round((y - ch.y) / SEL),
                 pix: new Uint8Array(N).fill(1),
                 heat: new Uint8Array(N),
@@ -287,7 +287,6 @@
             return sel;
         }
 
-        // Keluarkan sel yang sudah habis dari chunk dan daftar utama
         function lepasSel(c) {
             const ch = c.chunk;
             const i = ch.cells.indexOf(c);
@@ -335,7 +334,6 @@
             }
         }
 
-        // Pendinginan: hanya memproses daftar piksel panas
         function updateDingin(c, dt) {
             const list = c.panas;
             for (let k = list.length - 1; k >= 0; k--) {
@@ -367,6 +365,7 @@
             return c.hot;
         }
 
+        // Cari sel yang berisi titik (x, y), hanya di chunk tersebut
         function cariSel(x, y) {
             const ch = chunks.get(kunciChunk(Math.floor(x / CHUNK_W), Math.floor(y / CHUNK_W)));
             if (!ch) return null;
@@ -438,6 +437,7 @@
                 tingkat: 0,
                 tembus: 0,
                 panas: 0,
+                jarak: 0,          // jarak yang sudah ditempuh (piksel)
                 mati: false
             });
 
@@ -472,13 +472,30 @@
         }
 
         // ==========================================
-        // FISIKA PELURU
+        // RADAR: per gabungan (chunk), lalu per sel
         // ==========================================
+        // Peluru hanya memeriksa chunk di sekitarnya. Chunk yang tidak disentuh radar dilewati.
+        // Di dalam chunk yang tersentuh, hanya sel di dekat peluru yang dibangunkan.
         function cekRadar(x, y) {
-            for (const c of sels) {
-                if (x >= c.x - RADAR_MARGIN && x <= c.x + SEL + RADAR_MARGIN &&
-                    y >= c.y - RADAR_MARGIN && y <= c.y + SEL + RADAR_MARGIN) {
-                    c.radar = RADAR_DURASI;
+            const cx = Math.floor(x / CHUNK_W), cy = Math.floor(y / CHUNK_W);
+            const m = RADAR_MARGIN;
+
+            for (let dy = -1; dy <= 1; dy++) {
+                for (let dx = -1; dx <= 1; dx++) {
+                    const ch = chunks.get(kunciChunk(cx + dx, cy + dy));
+                    if (!ch) continue;
+
+                    // Gerbang chunk: apakah peluru berada di dekat kotak chunk?
+                    if (x < ch.x - m || x > ch.x + CHUNK_W + m ||
+                        y < ch.y - m || y > ch.y + CHUNK_W + m) continue;
+
+                    // Di dalam chunk: bangunkan sel yang dekat peluru saja
+                    for (const c of ch.cells) {
+                        if (x >= c.x - m && x <= c.x + SEL + m &&
+                            y >= c.y - m && y <= c.y + SEL + m) {
+                            c.radar = RADAR_DURASI;
+                        }
+                    }
                 }
             }
         }
@@ -550,6 +567,7 @@
             for (let i = 0; i < langkah; i++) {
                 b.x += cs * sub;
                 b.y += sn * sub;
+                b.jarak += sub;
                 cekRadar(b.x, b.y);
                 sentuh(b);
                 if (b.mati) return;
@@ -629,8 +647,10 @@
                 `FPS          : ${profil.fps}`,
                 `Sel          : ${sels.length}`,
                 `Chunk        : ${chunks.size}`,
+                `Chunk aktif  : ${profil.chunkAktif}`,
                 `Sel aktif    : ${profil.aktif}`,
                 `Sel tidur    : ${profil.tidur}`,
+                `Peluru       : ${bullets.length}`,
                 `Piksel       : ${totalPiksel()}`,
                 `Update (ms)  : ${profil.update.toFixed(2)}`,
                 `Gambar (ms)  : ${profil.draw.toFixed(2)}`,
@@ -769,7 +789,6 @@
             ctx.stroke();
         }
 
-        // Gambar semua chunk yang terlihat: satu drawImage per chunk
         function gambarChunks() {
             const ukuranLayar = CHUNK_W * skala;
             for (const ch of chunks.values()) {
@@ -782,7 +801,6 @@
             }
         }
 
-        // Efek di atas sel: kedip kena dan kotak radar
         function gambarEfekSel(c) {
             const sx = toScreenX(c.x), sy = toScreenY(c.y);
             const size = SEL * skala;
@@ -901,13 +919,12 @@
                 for (let i = bullets.length - 1; i >= 0; i--) {
                     const b = bullets[i];
                     majuPeluru(b, dt);
-                    if (b.mati || Math.hypot(b.x - camX, b.y - camY) > 4000) {
+                    if (b.mati || b.jarak >= JARAK_EFEKTIF_PX) {
                         catatSelesai(b);
                         bullets.splice(i, 1);
                     }
                 }
 
-                // Buang sel yang sudah habis dari daftar dan dari chunk
                 const sisaSel = [];
                 for (const c of sels) {
                     if (c.sisa > 0) sisaSel.push(c);
@@ -916,12 +933,20 @@
                 sels = sisaSel;
 
                 let aktif = 0, tidur = 0;
+                for (const ch of chunks.values()) ch.aktif = false;
                 for (const c of sels) {
-                    if (c.radar > 0 || c.kena > 0 || c.hot > 0) aktif++;
-                    else tidur++;
+                    if (c.radar > 0 || c.kena > 0 || c.hot > 0) {
+                        aktif++;
+                        c.chunk.aktif = true;
+                    } else {
+                        tidur++;
+                    }
                 }
+                let chunkAktif = 0;
+                for (const ch of chunks.values()) if (ch.aktif) chunkAktif++;
                 profil.aktif = aktif;
                 profil.tidur = tidur;
+                profil.chunkAktif = chunkAktif;
             }
 
             for (let i = effects.length - 1; i >= 0; i--) {
@@ -985,13 +1010,16 @@
 
             if (imgPeluru.complete && imgPeluru.naturalWidth > 0) {
                 for (const b of bullets) {
+                    const bx = toScreenX(b.x), by = toScreenY(b.y);
+                    if (bx < -50 || by < -50 || bx > canvas.width + 50 || by > canvas.height + 50) continue;
+
                     const gep = Math.max(0, Math.min(1,
                         (GEPENG_MULAI - b.kecepatan) / (GEPENG_MULAI - KECEPATAN_MIN)));
                     const w = PELURU_W * (1 + 3 * gep);
                     const h = PELURU_H * (1 - 0.5 * gep);
 
                     ctx.save();
-                    ctx.translate(toScreenX(b.x), toScreenY(b.y));
+                    ctx.translate(bx, by);
                     ctx.rotate(b.angle + Math.PI / 2);
                     ctx.scale(skala, skala);
                     ctx.drawImage(imgPeluru, -w / 2, -h / 2, w, h);
