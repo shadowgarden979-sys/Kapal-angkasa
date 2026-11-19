@@ -45,9 +45,11 @@
         const imgKilatan2 = new Image(); imgKilatan2.src = "kilatan2.png";
 
         // ==========================================
-        // PENGATURAN SEL
+        // SKALA
         // ==========================================
-        const PIX = 16;
+        const METER_PER_SEL = 16;         // 1 sel = 16 meter
+        const PIX = 16;                   // 1 sel = 16 piksel simulasi
+        const METER_PER_PIKSEL = METER_PER_SEL / PIX;   // = 1 meter per piksel
         const N = PIX * PIX;
         const ZOOM = 2;
         const SEL = PIX * ZOOM;
@@ -72,8 +74,8 @@
         // FISIKA PELURU & TEKANAN
         // ==========================================
         const KETAHANAN_YAMATO = 40;
-        const PENGURANGAN_TINGKAT = 0.8;  // tiap tingkat naik, kecepatan tinggal 80% (turun 20%)
-        const MAX_TINGKAT = 5;            // setelah tingkat ini, kecepatan tidak berkurang lagi
+        const PENGURANGAN_TINGKAT = 0.8;   // tiap tingkat naik, kecepatan tinggal 80% (turun 20%)
+        const MAX_TINGKAT = 5;             // setelah tingkat ini, kecepatan tidak berkurang lagi
         const KECEPATAN_MIN = 10;
         const GEPENG_MULAI = 100;
         const PANAS_CHANCE = 0.3;
@@ -98,7 +100,7 @@
 
         const FIRE_INTERVAL = 0.15;
 
-        const KECEPATAN_PELURU = 800;
+        const KECEPATAN_PELURU = 800;   // piksel per detik (= 800 m/s dengan 1 piksel = 1 meter)
         const PELURU_W = 7;
         const PELURU_H = 24;
 
@@ -185,6 +187,8 @@
         }
 
         // Kanvas kecil per sel, berisi gambar sel pada resolusi simulasi (16×16)
+        // panas: daftar indeks piksel yang sedang panas (hanya itu yang diproses saat pendinginan)
+        // inList: penanda supaya satu piksel tidak masuk daftar dua kali
         function buatSel(x, y) {
             const kanvas = document.createElement('canvas');
             kanvas.width = PIX;
@@ -195,6 +199,8 @@
                 heat: new Uint8Array(N),
                 timer: new Float32Array(N),
                 gosong: new Uint8Array(N),
+                inList: new Uint8Array(N),
+                panas: [],
                 sisa: N,
                 hot: 0,
                 radar: 0,
@@ -242,7 +248,7 @@
         function hapusPiksel(c, idx) {
             if (c.pix[idx] === 0) return;
             c.pix[idx] = 0;
-            c.heat[idx] = 0;
+            c.heat[idx] = 0;     // tetap di daftar panas sampai dibersihkan saat pendinginan
             c.sisa--;
             c.dirty = true;
         }
@@ -250,6 +256,11 @@
         function setHeat(c, idx, tingkat) {
             if (c.pix[idx] === 0) return;
             if (tingkat > c.heat[idx]) {
+                // Piksel yang baru panas masuk daftar pendinginan
+                if (c.heat[idx] === 0 && !c.inList[idx]) {
+                    c.inList[idx] = 1;
+                    c.panas.push(idx);
+                }
                 c.heat[idx] = tingkat;
                 c.timer[idx] = TINGKAT_DURASI[tingkat];
                 c.dirty = true;
@@ -260,23 +271,37 @@
             }
         }
 
-        // Pendinginan: hanya tingkat yang berubah yang menandai sel kotor
+        // Pendinginan: hanya memproses daftar piksel panas.
+        // Piksel yang sudah dingin atau sudah menguap dikeluarkan dari daftar.
         function updateDingin(c, dt) {
-            let hot = 0;
-            for (let i = 0; i < N; i++) {
-                const h = c.heat[i];
-                if (h === 0) continue;
-                hot++;
-                c.timer[i] -= dt;
-                if (c.timer[i] <= 0) {
+            const list = c.panas;
+            for (let k = list.length - 1; k >= 0; k--) {
+                const idx = list[k];
+                const h = c.heat[idx];
+
+                if (h === 0 || c.pix[idx] === 0) {
+                    c.inList[idx] = 0;
+                    list[k] = list[list.length - 1];
+                    list.pop();
+                    continue;
+                }
+
+                c.timer[idx] -= dt;
+                if (c.timer[idx] <= 0) {
                     const berikut = TINGKAT_BERIKUT[h];
-                    c.heat[i] = berikut;
-                    if (berikut > 0) c.timer[i] = TINGKAT_DURASI[berikut];
+                    c.heat[idx] = berikut;
                     c.dirty = true;
+                    if (berikut > 0) {
+                        c.timer[idx] = TINGKAT_DURASI[berikut];
+                    } else {
+                        c.inList[idx] = 0;
+                        list[k] = list[list.length - 1];
+                        list.pop();
+                    }
                 }
             }
-            c.hot = hot;
-            return hot;
+            c.hot = list.length;
+            return c.hot;
         }
 
         function cariSel(x, y) {
@@ -536,6 +561,7 @@
         function gambarProfil() {
             const baris = [
                 'PROFIL',
+                `Skala        : 1 sel = ${METER_PER_SEL} m`,
                 `FPS          : ${profil.fps}`,
                 `Sel          : ${sels.length}`,
                 `Sel aktif    : ${profil.aktif}`,
