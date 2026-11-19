@@ -60,7 +60,7 @@
         const CHUNK_SEL = 8;
         const CHUNK_W = CHUNK_SEL * SEL;
         const CHUNK_PX = CHUNK_SEL * PIX;
-        const INTERVAL_RENDER_CHUNK = 100;   // ms, chunk yang berubah digambar ulang maksimal 10 kali per detik
+        const INTERVAL_RENDER_CHUNK = 100;
 
         const JARAK_SPAWN_SEL = 5;
         const MAKS_TUMPUK = 4;
@@ -73,11 +73,18 @@
         const RADAR_TAMPIL = true;
 
         // ==========================================
-        // ZOOM
+        // ZOOM & TINGKAT DETAIL (LOD)
         // ==========================================
-        const ZOOM_MIN = 0.5;
+        const ZOOM_MIN = 0.07;           // cukup untuk melihat kapal 150 sel utuh
         const ZOOM_MAX = 2.5;
         const ZOOM_LANGKAH = 1.25;
+
+        // Jumlah sel horizontal yang terlihat di layar untuk tiap tingkat
+        const LOD_DEKAT_MAKS = 24;       // di bawah ini: piksel satu per satu
+        const LOD_SEDANG_MAKS = 75;      // di bawah ini: satu gambar per chunk
+        const LOD_JAUH_MAKS = 160;       // di bawah ini: satu kotak per chunk, di atasnya: ikon
+
+        const KLUSTER_INTERVAL = 500;    // ms, hitung ulang kelompok chunk
 
         // ==========================================
         // FISIKA PELURU & TEKANAN
@@ -143,10 +150,14 @@
         let warnaSiap = false;
         let sudahInit = false;
 
-        // Latar grid: satu pola kecil yang diulang, dibuat ulang hanya saat zoom berubah
         let gridTile = null;
         let gridTileSize = 0;
         let gridPattern = null;
+
+        let klusterList = [];
+        let klusterWaktu = -Infinity;
+        let levelSekarang = 'dekat';
+        let selTampak = 0;
 
         let debugTampil = false;
 
@@ -175,7 +186,25 @@
         }
 
         // ==========================================
-        // LATAR GRID (pola diulang, dibuat ulang saat zoom berubah)
+        // TINGKAT DETAIL
+        // ==========================================
+        function hitungLevel() {
+            selTampak = canvas.width / (SEL * skala);
+            if (selTampak <= LOD_DEKAT_MAKS) return 'dekat';
+            if (selTampak <= LOD_SEDANG_MAKS) return 'sedang';
+            if (selTampak <= LOD_JAUH_MAKS) return 'jauh';
+            return 'strategis';
+        }
+
+        function labelLevel(level) {
+            if (level === 'dekat') return 'dekat (piksel)';
+            if (level === 'sedang') return 'sedang (chunk)';
+            if (level === 'jauh') return 'jauh (kotak)';
+            return 'strategis (ikon)';
+        }
+
+        // ==========================================
+        // LATAR GRID
         // ==========================================
         function siapkanGrid() {
             const size = Math.max(4, Math.round(SEL * skala));
@@ -187,8 +216,8 @@
             gridTile.height = size;
             const g = gridTile.getContext('2d');
             g.fillStyle = 'rgba(120, 130, 160, 0.08)';
-            g.fillRect(0, 0, 1, size);      // garis kiri
-            g.fillRect(0, 0, size, 1);      // garis atas
+            g.fillRect(0, 0, 1, size);
+            g.fillRect(0, 0, size, 1);
             gridPattern = ctx.createPattern(gridTile, 'repeat');
         }
 
@@ -242,6 +271,8 @@
                 const cctx = kanvas.getContext('2d');
                 ch = {
                     key,
+                    gx: cx,
+                    gy: cy,
                     x: cx * CHUNK_W,
                     y: cy * CHUNK_W,
                     cells: [],
@@ -402,6 +433,47 @@
                 if (x >= c.x && x < c.x + SEL && y >= c.y && y < c.y + SEL) return c;
             }
             return null;
+        }
+
+        // ==========================================
+        // KELOMPOK CHUNK (dasar ikon strategis)
+        // ==========================================
+        // Chunk yang bersentuhan sisi dianggap satu kelompok (satu calon kapal)
+        function hitungKluster() {
+            const sudah = new Set();
+            const hasil = [];
+            for (const ch of chunks.values()) {
+                if (sudah.has(ch.key)) continue;
+
+                const antrean = [ch];
+                sudah.add(ch.key);
+                let sumX = 0, sumY = 0, jumlahChunk = 0, jumlahSel = 0;
+
+                while (antrean.length) {
+                    const c = antrean.pop();
+                    sumX += c.x + CHUNK_W / 2;
+                    sumY += c.y + CHUNK_W / 2;
+                    jumlahChunk++;
+                    jumlahSel += c.cells.length;
+
+                    const tetangga = [[1, 0], [-1, 0], [0, 1], [0, -1]];
+                    for (const [dx, dy] of tetangga) {
+                        const nb = chunks.get(kunciChunk(c.gx + dx, c.gy + dy));
+                        if (nb && !sudah.has(nb.key)) {
+                            sudah.add(nb.key);
+                            antrean.push(nb);
+                        }
+                    }
+                }
+
+                hasil.push({
+                    x: sumX / jumlahChunk,
+                    y: sumY / jumlahChunk,
+                    chunk: jumlahChunk,
+                    sel: jumlahSel
+                });
+            }
+            klusterList = hasil;
         }
 
         // ==========================================
@@ -669,6 +741,9 @@
             const baris = [
                 'PROFIL',
                 `Skala        : 1 sel = ${METER_PER_SEL} m`,
+                `Zoom         : ${skala.toFixed(2)}`,
+                `Level        : ${labelLevel(levelSekarang)}`,
+                `Sel tampak   : ${selTampak.toFixed(0)}`,
                 `FPS          : ${profil.fps}`,
                 `Sel          : ${sels.length}`,
                 `Chunk        : ${chunks.size}`,
@@ -684,7 +759,7 @@
                 `  - sel      : ${profil.sel.toFixed(2)}`,
                 `  - panel    : ${profil.panel.toFixed(2)}`
             ];
-            const pad = 8, lh = 15, w = 200, h = pad * 2 + lh * baris.length;
+            const pad = 8, lh = 15, w = 230, h = pad * 2 + lh * baris.length;
             const x = 10, y = 60;
             ctx.save();
             ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
@@ -792,10 +867,12 @@
         // ==========================================
         // GAMBAR
         // ==========================================
-        // Latar: satu pola grid yang diulang. Tidak ada garis yang digambar satu per satu.
-        function gambarLatar() {
+        function gambarLatar(level) {
             ctx.fillStyle = '#07080d';
             ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+            // Grid hanya untuk tingkat dekat dan sedang
+            if (level !== 'dekat' && level !== 'sedang') return;
 
             siapkanGrid();
             if (!gridPattern) return;
@@ -810,19 +887,26 @@
             ctx.restore();
         }
 
-        // Chunk yang kotor hanya digambar ulang paling sering setiap INTERVAL_RENDER_CHUNK ms
-        function gambarChunks(sekarang) {
+        function gambarChunks(sekarang, level) {
             const ukuranLayar = CHUNK_W * skala;
+            const detailPenuh = (level === 'dekat' || level === 'sedang');
+
             for (const ch of chunks.values()) {
                 const sx = toScreenX(ch.x), sy = toScreenY(ch.y);
                 if (sx + ukuranLayar < 0 || sy + ukuranLayar < 0 ||
                     sx > canvas.width || sy > canvas.height) continue;
 
-                if (ch.dirty && sekarang - ch.terakhirGambar >= INTERVAL_RENDER_CHUNK) {
-                    renderChunk(ch);
-                    ch.terakhirGambar = sekarang;
+                if (detailPenuh) {
+                    if (ch.dirty && sekarang - ch.terakhirGambar >= INTERVAL_RENDER_CHUNK) {
+                        renderChunk(ch);
+                        ch.terakhirGambar = sekarang;
+                    }
+                    ctx.drawImage(ch.canvas, sx, sy, ukuranLayar, ukuranLayar);
+                } else {
+                    // Jauh dan strategis: satu kotak warna per chunk, tanpa detail sel
+                    ctx.fillStyle = 'rgba(160, 168, 184, 0.55)';
+                    ctx.fillRect(sx, sy, ukuranLayar, ukuranLayar);
                 }
-                ctx.drawImage(ch.canvas, sx, sy, ukuranLayar, ukuranLayar);
             }
         }
 
@@ -844,6 +928,23 @@
                 ctx.lineWidth = 1;
                 ctx.strokeRect(sx - m + 0.5, sy - m + 0.5, size + 2 * m - 1, size + 2 * m - 1);
                 ctx.restore();
+            }
+        }
+
+        // Tingkat strategis: satu ikon per kelompok chunk
+        function gambarKluster() {
+            for (const k of klusterList) {
+                const sx = toScreenX(k.x), sy = toScreenY(k.y);
+                if (sx < -20 || sy < -20 || sx > canvas.width + 20 || sy > canvas.height + 20) continue;
+
+                const r = Math.min(14, 3 + Math.sqrt(k.sel) * 0.25);
+                ctx.beginPath();
+                ctx.arc(sx, sy, r, 0, Math.PI * 2);
+                ctx.fillStyle = 'rgba(147, 197, 253, 0.35)';
+                ctx.fill();
+                ctx.strokeStyle = 'rgba(147, 197, 253, 0.95)';
+                ctx.lineWidth = 2;
+                ctx.stroke();
             }
         }
 
@@ -885,7 +986,7 @@
             ] : ['Belum ada tembakan'];
 
             const pad = 8, lh = 16, w = 230, h = pad * 2 + lh * baris.length;
-            const x = 10, y = 60 + 170;
+            const x = 10, y = 60 + 230;
             ctx.save();
             ctx.fillStyle = 'rgba(0, 0, 0, 0.6)';
             ctx.fillRect(x, y, w, h);
@@ -916,6 +1017,12 @@
 
             const tUpdate0 = performance.now();
             const siap = initSiap();
+
+            levelSekarang = hitungLevel();
+            if (now - klusterWaktu >= KLUSTER_INTERVAL) {
+                hitungKluster();
+                klusterWaktu = now;
+            }
 
             let diff = targetAngle - currentAngle;
             while (diff > Math.PI) diff -= Math.PI * 2;
@@ -991,12 +1098,16 @@
             // ----- GAMBAR -----
             const tDraw0 = performance.now();
 
-            gambarLatar();
+            gambarLatar(levelSekarang);
 
             if (siap) {
                 const tSel0 = performance.now();
-                gambarChunks(now);
-                for (const c of sels) gambarEfekSel(c);
+                gambarChunks(now, levelSekarang);
+                if (levelSekarang === 'dekat' || levelSekarang === 'sedang') {
+                    for (const c of sels) gambarEfekSel(c);
+                } else if (levelSekarang === 'strategis') {
+                    gambarKluster();
+                }
                 profil.sel = haluskan(profil.sel, performance.now() - tSel0);
             }
 
