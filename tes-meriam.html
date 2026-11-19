@@ -60,6 +60,7 @@
         const CHUNK_SEL = 8;
         const CHUNK_W = CHUNK_SEL * SEL;
         const CHUNK_PX = CHUNK_SEL * PIX;
+        const INTERVAL_RENDER_CHUNK = 100;   // ms, chunk yang berubah digambar ulang maksimal 10 kali per detik
 
         const JARAK_SPAWN_SEL = 5;
         const MAKS_TUMPUK = 4;
@@ -87,7 +88,7 @@
         const KECEPATAN_MIN = 10;
         const GEPENG_MULAI = 100;
         const PANAS_CHANCE = 0.3;
-        const JARAK_EFEKTIF_PX = 52000;   // peluru meleset dihapus setelah jarak ini (piksel)
+        const JARAK_EFEKTIF_PX = 52000;
 
         // Indeks = tingkat panas (0 = dingin, dipakai warna dasar sel)
         const TINGKAT_WARNA = [null, '#7f1d1d', '#dc2626', '#fb923c', '#facc15', '#ffffff'];
@@ -150,7 +151,8 @@
         const profil = {
             fps: 0, frames: 0, lastFps: performance.now(),
             update: 0, draw: 0, dingin: 0, sel: 0, panel: 0,
-            aktif: 0, tidur: 0, chunkAktif: 0
+            aktif: 0, tidur: 0, chunkAktif: 0,
+            radar: 0, panas: 0
         };
 
         function haluskan(lama, baru) {
@@ -220,7 +222,8 @@
                     cctx,
                     img: cctx.createImageData(CHUNK_PX, CHUNK_PX),
                     dirty: true,
-                    aktif: false
+                    aktif: false,
+                    terakhirGambar: -Infinity
                 };
                 chunks.set(key, ch);
             }
@@ -365,7 +368,6 @@
             return c.hot;
         }
 
-        // Cari sel yang berisi titik (x, y), hanya di chunk tersebut
         function cariSel(x, y) {
             const ch = chunks.get(kunciChunk(Math.floor(x / CHUNK_W), Math.floor(y / CHUNK_W)));
             if (!ch) return null;
@@ -437,7 +439,7 @@
                 tingkat: 0,
                 tembus: 0,
                 panas: 0,
-                jarak: 0,          // jarak yang sudah ditempuh (piksel)
+                jarak: 0,
                 mati: false
             });
 
@@ -472,10 +474,8 @@
         }
 
         // ==========================================
-        // RADAR: per gabungan (chunk), lalu per sel
+        // RADAR: per chunk, lalu per sel
         // ==========================================
-        // Peluru hanya memeriksa chunk di sekitarnya. Chunk yang tidak disentuh radar dilewati.
-        // Di dalam chunk yang tersentuh, hanya sel di dekat peluru yang dibangunkan.
         function cekRadar(x, y) {
             const cx = Math.floor(x / CHUNK_W), cy = Math.floor(y / CHUNK_W);
             const m = RADAR_MARGIN;
@@ -485,11 +485,9 @@
                     const ch = chunks.get(kunciChunk(cx + dx, cy + dy));
                     if (!ch) continue;
 
-                    // Gerbang chunk: apakah peluru berada di dekat kotak chunk?
                     if (x < ch.x - m || x > ch.x + CHUNK_W + m ||
                         y < ch.y - m || y > ch.y + CHUNK_W + m) continue;
 
-                    // Di dalam chunk: bangunkan sel yang dekat peluru saja
                     for (const c of ch.cells) {
                         if (x >= c.x - m && x <= c.x + SEL + m &&
                             y >= c.y - m && y <= c.y + SEL + m) {
@@ -648,7 +646,8 @@
                 `Sel          : ${sels.length}`,
                 `Chunk        : ${chunks.size}`,
                 `Chunk aktif  : ${profil.chunkAktif}`,
-                `Sel aktif    : ${profil.aktif}`,
+                `Sel radar    : ${profil.radar}`,
+                `Sel panas    : ${profil.panas}`,
                 `Sel tidur    : ${profil.tidur}`,
                 `Peluru       : ${bullets.length}`,
                 `Piksel       : ${totalPiksel()}`,
@@ -789,14 +788,18 @@
             ctx.stroke();
         }
 
-        function gambarChunks() {
+        // Chunk yang kotor hanya digambar ulang paling sering setiap INTERVAL_RENDER_CHUNK ms
+        function gambarChunks(sekarang) {
             const ukuranLayar = CHUNK_W * skala;
             for (const ch of chunks.values()) {
                 const sx = toScreenX(ch.x), sy = toScreenY(ch.y);
                 if (sx + ukuranLayar < 0 || sy + ukuranLayar < 0 ||
                     sx > canvas.width || sy > canvas.height) continue;
 
-                if (ch.dirty) renderChunk(ch);
+                if (ch.dirty && sekarang - ch.terakhirGambar >= INTERVAL_RENDER_CHUNK) {
+                    renderChunk(ch);
+                    ch.terakhirGambar = sekarang;
+                }
                 ctx.drawImage(ch.canvas, sx, sy, ukuranLayar, ukuranLayar);
             }
         }
@@ -932,20 +935,27 @@
                 }
                 sels = sisaSel;
 
-                let aktif = 0, tidur = 0;
+                let radarN = 0, panasN = 0, aktifN = 0, tidurN = 0;
                 for (const ch of chunks.values()) ch.aktif = false;
                 for (const c of sels) {
-                    if (c.radar > 0 || c.kena > 0 || c.hot > 0) {
-                        aktif++;
+                    const punyaRadar = c.radar > 0 || c.kena > 0;
+                    const punyaPanas = c.hot > 0;
+                    if (punyaRadar) radarN++;
+                    if (punyaPanas) panasN++;
+                    if (punyaRadar || punyaPanas) {
+                        aktifN++;
                         c.chunk.aktif = true;
                     } else {
-                        tidur++;
+                        tidurN++;
                     }
                 }
                 let chunkAktif = 0;
                 for (const ch of chunks.values()) if (ch.aktif) chunkAktif++;
-                profil.aktif = aktif;
-                profil.tidur = tidur;
+
+                profil.radar = radarN;
+                profil.panas = panasN;
+                profil.aktif = aktifN;
+                profil.tidur = tidurN;
                 profil.chunkAktif = chunkAktif;
             }
 
@@ -963,7 +973,7 @@
 
             if (siap) {
                 const tSel0 = performance.now();
-                gambarChunks();
+                gambarChunks(now);
                 for (const c of sels) gambarEfekSel(c);
                 profil.sel = haluskan(profil.sel, performance.now() - tSel0);
             }
