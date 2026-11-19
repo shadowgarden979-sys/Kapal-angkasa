@@ -49,7 +49,6 @@
         // ==========================================
         const METER_PER_SEL = 16;
         const PIX = 16;
-        const METER_PER_PIKSEL = METER_PER_SEL / PIX;
         const N = PIX * PIX;
         const ZOOM = 2;
         const SEL = PIX * ZOOM;
@@ -75,10 +74,10 @@
         // ==========================================
         // KAPAL RAKSASA (bertahap)
         // ==========================================
-        const KAPAL_W = 150;                 // lebar dalam sel
-        const KAPAL_H = 110;                 // tinggi dalam sel (lonjong)
-        const SPAWN_PER_FRAME = 256;         // sel yang dibuat per frame (sekitar 4 chunk)
-        const KAPAL_JARAK_X = 1500;          // pusat kapal di kanan kamera, dalam piksel layar pada zoom 1
+        const KAPAL_W = 150;
+        const KAPAL_H = 110;
+        const SPAWN_PER_FRAME = 96;          // dinaikkan dari 256 agar HP lemah tidak macet
+        const KAPAL_JARAK_X = 1500;
 
         // ==========================================
         // ZOOM & TINGKAT DETAIL (LOD)
@@ -87,12 +86,9 @@
         const ZOOM_MAX = 2.5;
         const ZOOM_LANGKAH = 1.25;
 
-        // Ambang berdasarkan ukuran satu sel di layar dalam piksel
-        const LOD_DEKAT_PX = 12;      // di atas ini: piksel satu per satu
-        const LOD_SEDANG_PX = 4.5;    // di atas ini: satu gambar per chunk
-        const LOD_JAUH_PX = 1.5;      // di atas ini: siluet chunk dan meriam, di bawahnya: ikon
-
-        const KLUSTER_INTERVAL = 500;
+        const LOD_DEKAT_PX = 12;
+        const LOD_SEDANG_PX = 4.5;
+        const LOD_JAUH_PX = 1.5;
 
         // ==========================================
         // FISIKA PELURU & TEKANAN
@@ -151,6 +147,16 @@
         let chunks = new Map();
         let lastShot = null;
 
+        // Daftar aktif (diperbarui saat status berubah, bukan dicari tiap frame)
+        const activeCells = new Set();   // sel dengan radar atau efek kena
+        const hotCells = new Set();      // sel dengan piksel panas
+        const dirtyChunks = new Set();   // chunk yang perlu digambar ulang
+        let habisSel = [];               // sel yang pikselnya habis, dibuang di frame berikutnya
+        let totalPikselCount = 0;        // penghitung incremental
+
+        let klusterDirty = true;
+        let klusterList = [];
+
         let RGB_DASAR = null;
         let RGB_GOSONG = null;
         let RGB_TINGKAT = null;
@@ -168,8 +174,6 @@
         let antreanSpawn = [];
         let antreanPos = 0;
 
-        let klusterList = [];
-        let klusterWaktu = -Infinity;
         let levelSekarang = 'dekat';
         let selTampak = 0;
 
@@ -202,7 +206,6 @@
         // ==========================================
         // TINGKAT DETAIL
         // ==========================================
-        // Dihitung dari ukuran satu sel di layar (piksel), bukan jumlah sel.
         function hitungLevel() {
             const selPx = SEL * skala;
             selTampak = Math.min(canvas.width, canvas.height) / selPx;
@@ -238,14 +241,13 @@
         }
 
         // ==========================================
-        // SILUET (dibuat sekali saat gambar meriam siap)
+        // SILUET MERIAM (dibuat sekali)
         // ==========================================
         function pastikanSiluet() {
             if (siluetSiap) return;
             if (!imgAlas.complete || !imgRumah.complete || !imgLaras.complete) return;
             if (imgAlas.naturalWidth === 0 || imgLaras.naturalWidth === 0) return;
 
-            // Alas
             const aw = imgAlas.naturalWidth, ah = imgAlas.naturalHeight;
             const sa = Math.max(aw, ah) + 8;
             siluetAlas = document.createElement('canvas');
@@ -257,7 +259,6 @@
             ga.fillStyle = '#cbd5e1';
             ga.fillRect(0, 0, sa, sa);
 
-            // Meriam: laras dan rumah, pivot di tengah kanvas
             const st = 320;
             siluetTurret = document.createElement('canvas');
             siluetTurret.width = st;
@@ -310,7 +311,7 @@
         }
 
         // ==========================================
-        // CHUNK: kanvas detail 8×8 sel, dan siluet 8×8 piksel
+        // CHUNK
         // ==========================================
         function kunciChunk(cx, cy) {
             return cx + ',' + cy;
@@ -346,10 +347,12 @@
                     siluetCtx: sctx,
                     siluetImg: sctx.createImageData(CHUNK_SEL, CHUNK_SEL),
                     dirty: true,
-                    aktif: false,
-                    terakhirGambar: -Infinity
+                    terakhirGambar: -Infinity,
+                    kluster: null
                 };
                 chunks.set(key, ch);
+                dirtyChunks.add(ch);
+                klusterDirty = true;
             }
             return ch;
         }
@@ -400,10 +403,23 @@
             ch.cctx.putImageData(ch.img, 0, 0);
             ch.siluetCtx.putImageData(ch.siluetImg, 0, 0);
             ch.dirty = false;
+            if (ch.kluster) ch.kluster.dirty = true;
+        }
+
+        // Chunk kotor hanya digambar ulang paling sering setiap INTERVAL_RENDER_CHUNK
+        function renderChunkKotor(sekarang) {
+            for (const ch of dirtyChunks) {
+                if (sekarang - ch.terakhirGambar >= INTERVAL_RENDER_CHUNK) {
+                    renderChunk(ch);
+                    ch.terakhirGambar = sekarang;
+                    dirtyChunks.delete(ch);
+                }
+            }
         }
 
         function tandai(c) {
             c.chunk.dirty = true;
+            dirtyChunks.add(c.chunk);
         }
 
         // ==========================================
@@ -428,7 +444,8 @@
                 kena: 0
             };
             ch.cells.push(sel);
-            ch.dirty = true;
+            totalPikselCount += N;
+            tandai(sel);
             return sel;
         }
 
@@ -436,8 +453,17 @@
             const ch = c.chunk;
             const i = ch.cells.indexOf(c);
             if (i >= 0) ch.cells.splice(i, 1);
-            ch.dirty = true;
-            if (ch.cells.length === 0) chunks.delete(ch.key);
+            activeCells.delete(c);
+            hotCells.delete(c);
+
+            if (ch.cells.length === 0) {
+                chunks.delete(ch.key);
+                dirtyChunks.delete(ch);
+                klusterDirty = true;
+            } else {
+                ch.dirty = true;
+                dirtyChunks.add(ch);
+            }
         }
 
         function initSiap() {
@@ -459,6 +485,8 @@
             c.pix[idx] = 0;
             c.heat[idx] = 0;
             c.sisa--;
+            totalPikselCount--;
+            if (c.sisa === 0) habisSel.push(c);
             tandai(c);
         }
 
@@ -471,6 +499,8 @@
                 }
                 c.heat[idx] = tingkat;
                 c.timer[idx] = TINGKAT_DURASI[tingkat];
+                c.hot = c.panas.length;
+                hotCells.add(c);
                 tandai(c);
             }
             if (tingkat === MAX_TINGKAT && !c.gosong[idx]) {
@@ -479,6 +509,7 @@
             }
         }
 
+        // Pendinginan hanya untuk sel yang ada di hotCells
         function updateDingin(c, dt) {
             const list = c.panas;
             for (let k = list.length - 1; k >= 0; k--) {
@@ -507,7 +538,6 @@
                 }
             }
             c.hot = list.length;
-            return c.hot;
         }
 
         function cariSel(x, y) {
@@ -520,7 +550,7 @@
         }
 
         // ==========================================
-        // KAPAL RAKSASA (dibuat bertahap)
+        // KAPAL RAKSASA (bertahap)
         // ==========================================
         function antreKapalRaksasa() {
             if (antreanSpawn.length > 0 && antreanPos < antreanSpawn.length) return;
@@ -560,7 +590,7 @@
         }
 
         // ==========================================
-        // KELOMPOK CHUNK (dasar ikon strategis)
+        // KLUSTER CHUNK (dihitung ulang hanya saat struktur chunk berubah)
         // ==========================================
         function hitungKluster() {
             const sudah = new Set();
@@ -570,14 +600,20 @@
 
                 const antrean = [ch];
                 sudah.add(ch.key);
-                let sumX = 0, sumY = 0, jumlahChunk = 0, jumlahSel = 0;
+                const anggota = [];
+                let sumX = 0, sumY = 0, jumlahSel = 0;
+                let minGx = Infinity, minGy = Infinity, maxGx = -Infinity, maxGy = -Infinity;
 
                 while (antrean.length) {
                     const c = antrean.pop();
+                    anggota.push(c);
                     sumX += c.x + CHUNK_W / 2;
                     sumY += c.y + CHUNK_W / 2;
-                    jumlahChunk++;
                     jumlahSel += c.cells.length;
+                    if (c.gx < minGx) minGx = c.gx;
+                    if (c.gy < minGy) minGy = c.gy;
+                    if (c.gx > maxGx) maxGx = c.gx;
+                    if (c.gy > maxGy) maxGy = c.gy;
 
                     const tetangga = [[1, 0], [-1, 0], [0, 1], [0, -1]];
                     for (const [dx, dy] of tetangga) {
@@ -589,14 +625,34 @@
                     }
                 }
 
-                hasil.push({
-                    x: sumX / jumlahChunk,
-                    y: sumY / jumlahChunk,
-                    chunk: jumlahChunk,
-                    sel: jumlahSel
-                });
+                const k = {
+                    x: sumX / anggota.length,
+                    y: sumY / anggota.length,
+                    sel: jumlahSel,
+                    anggota,
+                    minGx, minGy,
+                    gw: maxGx - minGx + 1,
+                    gh: maxGy - minGy + 1,
+                    canvas: null,
+                    dirty: true
+                };
+                for (const c of anggota) c.kluster = k;
+                hasil.push(k);
             }
             klusterList = hasil;
+        }
+
+        // Satu kanvas siluet per kelompok: 1 piksel per sel
+        function buatCanvasKluster(k) {
+            const c = document.createElement('canvas');
+            c.width = k.gw * CHUNK_SEL;
+            c.height = k.gh * CHUNK_SEL;
+            const g = c.getContext('2d');
+            for (const ch of k.anggota) {
+                g.drawImage(ch.siluetCanvas, (ch.gx - k.minGx) * CHUNK_SEL, (ch.gy - k.minGy) * CHUNK_SEL);
+            }
+            k.canvas = c;
+            k.dirty = false;
         }
 
         // ==========================================
@@ -715,6 +771,7 @@
                         if (x >= c.x - m && x <= c.x + SEL + m &&
                             y >= c.y - m && y <= c.y + SEL + m) {
                             c.radar = RADAR_DURASI;
+                            activeCells.add(c);
                         }
                     }
                 }
@@ -757,6 +814,7 @@
                 b.kecepatan = Math.floor(b.kecepatan * PENGURANGAN_TINGKAT);
             }
             c.kena = 0.15;
+            activeCells.add(c);
 
             for (let dy = -1; dy <= 1; dy++) {
                 for (let dx = -1; dx <= 1; dx++) {
@@ -855,12 +913,6 @@
         // ==========================================
         // PANEL PROFIL (selalu tampil)
         // ==========================================
-        function totalPiksel() {
-            let t = 0;
-            for (const c of sels) t += c.sisa;
-            return t;
-        }
-
         function gambarProfil() {
             const sisaAntre = Math.max(0, antreanSpawn.length - antreanPos);
             const baris = [
@@ -878,7 +930,7 @@
                 `Sel panas    : ${profil.panas}`,
                 `Sel tidur    : ${profil.tidur}`,
                 `Peluru       : ${bullets.length}`,
-                `Piksel       : ${totalPiksel()}`,
+                `Piksel       : ${totalPikselCount}`,
                 `Update (ms)  : ${profil.update.toFixed(2)}`,
                 `Gambar (ms)  : ${profil.draw.toFixed(2)}`,
                 `  - dingin   : ${profil.dingin.toFixed(2)}`,
@@ -1019,26 +1071,29 @@
             ctx.restore();
         }
 
-        // Dekat dan sedang: detail chunk. Jauh: siluet chunk. Strategis: tidak ada chunk.
-        function gambarChunks(sekarang, level) {
+        // Dekat dan sedang: canvas per chunk. Jauh: satu siluet per kelompok. Strategis: tidak ada.
+        function gambarChunks(level) {
             if (level === 'strategis') return;
+
+            if (level === 'jauh') {
+                for (const k of klusterList) {
+                    const wx = k.minGx * CHUNK_W, wy = k.minGy * CHUNK_W;
+                    const sx = toScreenX(wx), sy = toScreenY(wy);
+                    const lw = k.gw * CHUNK_W * skala, lh = k.gh * CHUNK_W * skala;
+                    if (sx + lw < 0 || sy + lh < 0 || sx > canvas.width || sy > canvas.height) continue;
+
+                    if (k.dirty || !k.canvas) buatCanvasKluster(k);
+                    ctx.drawImage(k.canvas, sx, sy, lw, lh);
+                }
+                return;
+            }
 
             const ukuranLayar = CHUNK_W * skala;
             for (const ch of chunks.values()) {
                 const sx = toScreenX(ch.x), sy = toScreenY(ch.y);
                 if (sx + ukuranLayar < 0 || sy + ukuranLayar < 0 ||
                     sx > canvas.width || sy > canvas.height) continue;
-
-                if (ch.dirty && sekarang - ch.terakhirGambar >= INTERVAL_RENDER_CHUNK) {
-                    renderChunk(ch);
-                    ch.terakhirGambar = sekarang;
-                }
-
-                if (level === 'jauh') {
-                    ctx.drawImage(ch.siluetCanvas, sx, sy, ukuranLayar, ukuranLayar);
-                } else {
-                    ctx.drawImage(ch.canvas, sx, sy, ukuranLayar, ukuranLayar);
-                }
+                ctx.drawImage(ch.canvas, sx, sy, ukuranLayar, ukuranLayar);
             }
         }
 
@@ -1152,9 +1207,9 @@
             pastikanSiluet();
 
             levelSekarang = hitungLevel();
-            if (now - klusterWaktu >= KLUSTER_INTERVAL) {
+            if (klusterDirty) {
                 hitungKluster();
-                klusterWaktu = now;
+                klusterDirty = false;
             }
 
             let diff = targetAngle - currentAngle;
@@ -1175,13 +1230,20 @@
             if (siap) {
                 prosesAntreKapal();
 
+                // Pendinginan: hanya sel yang punya piksel panas
                 const tDingin0 = performance.now();
-                for (const c of sels) {
-                    c.radar = Math.max(0, c.radar - dt);
-                    c.kena = Math.max(0, c.kena - dt);
+                for (const c of hotCells) {
                     updateDingin(c, dt);
+                    if (c.hot === 0) hotCells.delete(c);
                 }
                 profil.dingin = haluskan(profil.dingin, performance.now() - tDingin0);
+
+                // Radar dan efek kena: hanya sel yang ada di activeCells
+                for (const c of activeCells) {
+                    if (c.radar > 0) c.radar = Math.max(0, c.radar - dt);
+                    if (c.kena > 0) c.kena = Math.max(0, c.kena - dt);
+                    if (c.radar === 0 && c.kena === 0) activeCells.delete(c);
+                }
 
                 for (let i = bullets.length - 1; i >= 0; i--) {
                     const b = bullets[i];
@@ -1192,35 +1254,27 @@
                     }
                 }
 
-                const sisaSel = [];
-                for (const c of sels) {
-                    if (c.sisa > 0) sisaSel.push(c);
-                    else lepasSel(c);
+                // Sel yang pikselnya habis dibuang di sini, bukan dengan filter tiap frame
+                if (habisSel.length > 0) {
+                    for (const c of habisSel) lepasSel(c);
+                    habisSel = [];
+                    sels = sels.filter(c => c.sisa > 0);
                 }
-                sels = sisaSel;
 
-                let radarN = 0, panasN = 0, aktifN = 0, tidurN = 0;
-                for (const ch of chunks.values()) ch.aktif = false;
-                for (const c of sels) {
-                    const punyaRadar = c.radar > 0 || c.kena > 0;
-                    const punyaPanas = c.hot > 0;
-                    if (punyaRadar) radarN++;
-                    if (punyaPanas) panasN++;
-                    if (punyaRadar || punyaPanas) {
-                        aktifN++;
-                        c.chunk.aktif = true;
-                    } else {
-                        tidurN++;
-                    }
-                }
-                let chunkAktif = 0;
-                for (const ch of chunks.values()) if (ch.aktif) chunkAktif++;
+                // Hitung aktif dan tidur dari himpunan yang sudah dijaga
+                let overlap = 0;
+                for (const c of hotCells) if (activeCells.has(c)) overlap++;
+                const aktifN = activeCells.size + hotCells.size - overlap;
 
-                profil.radar = radarN;
-                profil.panas = panasN;
+                const chunkAktifSet = new Set();
+                for (const c of activeCells) chunkAktifSet.add(c.chunk);
+                for (const c of hotCells) chunkAktifSet.add(c.chunk);
+
+                profil.radar = activeCells.size;
+                profil.panas = hotCells.size;
                 profil.aktif = aktifN;
-                profil.tidur = tidurN;
-                profil.chunkAktif = chunkAktif;
+                profil.tidur = sels.length - aktifN;
+                profil.chunkAktif = chunkAktifSet.size;
             }
 
             for (let i = effects.length - 1; i >= 0; i--) {
@@ -1237,10 +1291,12 @@
             gambarLatar(levelSekarang);
 
             if (siap) {
+                renderChunkKotor(now);
+
                 const tSel0 = performance.now();
-                gambarChunks(now, levelSekarang);
+                gambarChunks(levelSekarang);
                 if (detail) {
-                    for (const c of sels) gambarEfekSel(c);
+                    for (const c of activeCells) gambarEfekSel(c);
                 } else if (levelSekarang === 'strategis') {
                     gambarKluster();
                 }
@@ -1251,7 +1307,6 @@
             const cy = canvas.height / 2;
 
             if (detail || !siluetSiap) {
-                // Gambar detail meriam (PNG)
                 ctx.save();
                 ctx.translate(cx, cy);
                 ctx.scale(skala, skala);
@@ -1275,7 +1330,6 @@
                 }
                 ctx.restore();
             } else {
-                // Gambar siluet meriam (jauh dan strategis)
                 ctx.save();
                 ctx.translate(cx, cy);
                 ctx.scale(skala, skala);
@@ -1302,7 +1356,6 @@
                 ctx.restore();
             }
 
-            // Peluru: ukuran minimum di layar supaya tetap terlihat saat zoom keluar
             if (imgPeluru.complete && imgPeluru.naturalWidth > 0) {
                 for (const b of bullets) {
                     const bx = toScreenX(b.x), by = toScreenY(b.y);
