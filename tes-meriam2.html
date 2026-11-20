@@ -42,7 +42,7 @@
         const TINGKAT_DURASI = [0, 3, 2, 1, 1, 1];
 
         // Komponen meriam (dalam piksel kanvas; pivot = pusat rumah = (64, 120) di kanvas turret 128×192)
-        const JARAK_LARAS = 11;        // jarak laras tengah ke kanan dan kiri
+        const JARAK_LARAS = 21;        // jarak tengah ke tengah antar laras (lebar laras 10 + celah 11)
         const LARAS_OFFSET_Y = -120;   // ujung laras diam, 120 piksel di atas pivot
         const RECOIL_MAX = 50, RECOIL_DURASI = 0.35, FIRE_INTERVAL = 0.15;
         const KECEPATAN_PELURU = 800, PELURU_W = 6, PELURU_H = 18;
@@ -492,7 +492,6 @@
             if (!imgAlas.complete || !imgRumah.complete || !imgLaras.complete) return;
             if (imgAlas.naturalWidth === 0 || imgLaras.naturalWidth === 0) return;
 
-            // Alas: 128×144
             siluetAlas = document.createElement('canvas');
             siluetAlas.width = 128; siluetAlas.height = 144;
             const ga = siluetAlas.getContext('2d');
@@ -501,12 +500,11 @@
             ga.fillStyle = '#cbd5e1';
             ga.fillRect(0, 0, 128, 144);
 
-            // Turret: rumah 128×144 dan tiga laras 128×192, satu ruang yang sama
             siluetTurret = document.createElement('canvas');
             siluetTurret.width = 128; siluetTurret.height = 192;
             const gt = siluetTurret.getContext('2d');
             for (const g of [-JARAK_LARAS, 0, JARAK_LARAS]) {
-                gt.drawImage(imgLaras, g, 0);
+                gt.drawImage(imgLaras, 64 - 64 + g, 0);
             }
             gt.drawImage(imgRumah, 0, 48);
             gt.globalCompositeOperation = 'source-in';
@@ -518,17 +516,16 @@
 
         function buatMeriam(x, y) {
             return {
-                x, y,                 // pivot di dunia
-                sudut: -Math.PI / 2,  // sudut sekarang
-                bidik: -Math.PI / 2,  // sudut yang diinginkan
-                giliran: 0,           // 0 kiri, 1 tengah, 2 kanan
+                x, y,
+                sudut: -Math.PI / 2,
+                bidik: -Math.PI / 2,
+                giliran: 0,
                 recoil: [0, 0, 0],
                 cooldown: 0,
                 api: false
             };
         }
 
-        // Titik di laras, dihitung di dunia dengan memutar sesuai sudut meriam
         function muzzleMeriam(m, ox, oy) {
             const c = Math.cos(m.sudut + Math.PI / 2);
             const s = Math.sin(m.sudut + Math.PI / 2);
@@ -555,7 +552,6 @@
             const geser = [-JARAK_LARAS, 0, JARAK_LARAS][m.giliran];
             m.recoil[m.giliran] = RECOIL_MAX;
 
-            // Ujung laras diam, jadi titik peluru tidak ikut recoil
             const mulut = muzzleMeriam(m, geser, LARAS_OFFSET_Y);
             tambahPeluru(mulut.x, mulut.y, m.sudut);
             tambahKilatan(mulut.x, mulut.y, m.sudut, m.giliran === 2 ? imgKilatan2 : imgKilatan1);
@@ -964,10 +960,8 @@
             ctx.scale(kamera.skala, kamera.skala);
 
             if (detail || !siluetSiap) {
-                // Alas diam
                 ctx.drawImage(imgAlas, -64, -72);
 
-                // Rumah dan laras berputar di pivot
                 ctx.rotate(m.sudut + Math.PI / 2);
 
                 const geser = [-JARAK_LARAS, 0, JARAK_LARAS];
@@ -1205,7 +1199,7 @@
 
             // Meriam menempel di pusat kamera, jadi diam di layar saat digeser
             meriamUtama.x = kamera.x;
-            meriamUtama.y = kamera.y + 0;
+            meriamUtama.y = kamera.y;
             meriamUtama.api = [...pointers.values()].some(v => v.role === 'fire');
             updateMeriam(meriamUtama, dt);
 
