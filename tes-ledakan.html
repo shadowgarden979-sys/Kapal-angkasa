@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no" />
-  <title>Uji Gelombang Kejut & Dorongan Sel</title>
+  <title>Uji Gelombang Kejut Transparan Beriak</title>
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
     body {
@@ -31,7 +31,7 @@
 </head>
 <body>
   <div id="hud">
-    <div><span class="highlight">TAP / KLIK LAYAR</span> : Picu Ledakan Reaktor</div>
+    <div><span class="highlight">TAP / KLIK LAYAR</span> : Picu Gelombang Transparan</div>
     <div>FPS: <span id="fps" class="highlight">60</span> | Objek Sel: <span id="count">0</span></div>
   </div>
   <canvas id="c"></canvas>
@@ -49,25 +49,22 @@ window.addEventListener('resize', () => {
   H = canvas.height = window.innerHeight;
 });
 
-// Skala sesuai spek: 1 sel = 16x16 px
 const CELL_SIZE = 16;
 
-// --- 1. SISTEM KAMERA MATI + SCREEN SHAKE ---
+// --- 1. KAMERA MATI + SCREEN SHAKE ---
 const camera = {
-  trauma: 0,       // 0.0 sampai 1.0
-  maxOffset: 28,   // Maksimal goyangan dalam piksel
+  trauma: 0,
+  maxOffset: 26,
   time: 0,
   addTrauma(amount) {
     this.trauma = Math.min(1, this.trauma + amount);
   },
   update(dt) {
     this.time += dt;
-    // Meluruh habis dalam ~0.6 detik
     this.trauma = Math.max(0, this.trauma - dt * 1.6);
   },
   apply(ctx) {
     if (this.trauma <= 0.001) return;
-    // Kuadratkan trauma agar getaran awal keras lalu mereda halus
     const shake = this.trauma * this.trauma;
     const ox = Math.sin(this.time * 65) * this.maxOffset * shake;
     const oy = Math.cos(this.time * 53) * this.maxOffset * shake;
@@ -75,7 +72,7 @@ const camera = {
   }
 };
 
-// --- 2. OBJEK KELOMPOK SEL (TARGET DORONGAN) ---
+// --- 2. KELOMPOK SEL UJI ---
 const cellClusters = [];
 
 function spawnTestClusters() {
@@ -83,113 +80,121 @@ function spawnTestClusters() {
   const cx = W / 2;
   const cy = H / 2;
 
-  // Ukuran dalam satuan sel (1 sel = 16x16 px)
   const presets = [
-    { cols: 3, rows: 3, x: cx - 140, y: cy - 90,  color: '#38bdf8' }, // Ringan
-    { cols: 4, rows: 2, x: cx + 130, y: cy - 110, color: '#4ade80' }, // Ringan
-    { cols: 6, rows: 6, x: cx - 180, y: cy + 120, color: '#facc15' }, // Sedang
-    { cols: 8, rows: 5, x: cx + 170, y: cy + 100, color: '#fb923c' }, // Berat
-    { cols: 2, rows: 2, x: cx,       y: cy - 180, color: '#f472b6' }  // Sangat ringan
+    { cols: 3, rows: 3, x: cx - 140, y: cy - 90,  color: '#38bdf8' },
+    { cols: 4, rows: 2, x: cx + 130, y: cy - 110, color: '#4ade80' },
+    { cols: 6, rows: 6, x: cx - 180, y: cy + 120, color: '#facc15' },
+    { cols: 8, rows: 5, x: cx + 170, y: cy + 100, color: '#fb923c' },
+    { cols: 2, rows: 2, x: cx,       y: cy - 180, color: '#f472b6' }
   ];
 
   for (const p of presets) {
     const totalCells = p.cols * p.rows;
     cellClusters.push({
-      x: p.x,
-      y: p.y,
-      vx: 0,
-      vy: 0,
-      angle: 0,
-      angVel: 0,
-      cols: p.cols,
-      rows: p.rows,
-      mass: totalCells, // Massa = jumlah sel
+      x: p.x, y: p.y,
+      vx: 0, vy: 0,
+      angle: 0, angVel: 0,
+      cols: p.cols, rows: p.rows,
+      mass: totalCells,
       color: p.color
     });
   }
   countEl.textContent = cellClusters.reduce((sum, c) => sum + c.mass, 0);
 }
 
-// --- 3. DAFTAR GELOMBANG KEJUT & PERCIKAN ---
+// --- 3. GELOMBANG KEJUT TRANSPARAN BERIAK ---
 const shockwaves = [];
 const sparks = [];
 
 function triggerExplosion(x, y) {
-  const maxRadius = 480;   // Jangkauan gelombang kejut (px)
-  const baseForce = 1800;  // Kekuatan dorong dasar
+  const maxRadius = 500;
+  const baseForce = 1800;
 
-  // Tambah goyangan kamera
   camera.addTrauma(0.95);
 
-  // Cincin utama (gelombang kejut)
+  // Gelombang utama (riak besar transparan)
   shockwaves.push({
     x, y,
-    radius: 8,
+    radius: 12,
     maxRadius,
-    speed: 1100,     // Kecepatan rambat gelombang (px/s)
-    life: 1.0,       // 1.0 -> 0.0
-    color: '186, 230, 253' // Biru muda plasma (RGB)
+    speed: 1050,
+    life: 1.0,
+    freq: 14,          // Jumlah gelombang riak di sekeliling lingkaran
+    amp: 9,            // Tinggi gelombang riak (piksel)
+    phase: Math.random() * 6.28,
+    tint: '186, 230, 253' // Biru sangat muda bening
   });
 
-  // Cincin kedua (susulan panas inti reaktor)
+  // Gelombang susulan (riak kedua yang lebih rapat & hangat)
   shockwaves.push({
     x, y,
-    radius: 4,
-    maxRadius: maxRadius * 0.55,
-    speed: 650,
+    radius: 6,
+    maxRadius: maxRadius * 0.72,
+    speed: 820,
     life: 1.0,
-    color: '251, 146, 60' // Oranye panas (RGB)
+    freq: 20,
+    amp: 6,
+    phase: Math.random() * 6.28,
+    tint: '254, 215, 170' // Putih-oranye hangat transparan
   });
 
-  // Percikan ringan (24 butir)
-  for (let i = 0; i < 24; i++) {
-    const a = (Math.PI * 2 * i) / 24 + (Math.random() - 0.5) * 0.2;
-    const spd = 120 + Math.random() * 380;
+  // Percikan tipis
+  for (let i = 0; i < 20; i++) {
+    const a = (Math.PI * 2 * i) / 20 + (Math.random() - 0.5) * 0.2;
+    const spd = 120 + Math.random() * 360;
     sparks.push({
       x, y,
       vx: Math.cos(a) * spd,
       vy: Math.sin(a) * spd,
-      life: 0.4 + Math.random() * 0.35,
-      maxLife: 0.75
+      life: 0.35 + Math.random() * 0.3,
+      maxLife: 0.65
     });
   }
 
-  // Hitung dorongan fisik (Impulse) ke setiap kelompok sel
+  // Dorongan fisik ke kelompok sel
   for (const c of cellClusters) {
     const dx = c.x - x;
     const dy = c.y - y;
     const dist = Math.hypot(dx, dy);
 
     if (dist < maxRadius && dist > 1) {
-      // Makin dekat pusat ledakan, faktor makin mendekati 1.0
       const falloff = 1 - (dist / maxRadius);
-      // Dorongan dibagi massa (jumlah sel) -> sel sedikit mental jauh, sel banyak cuma geser
       const impulse = (baseForce * falloff * falloff) / Math.sqrt(c.mass);
 
-      const nx = dx / dist;
-      const ny = dy / dist;
-
-      c.vx += nx * impulse;
-      c.vy += ny * impulse;
-
-      // Tambah efek putaran acak saat kena hantaman gelombang
-      const torque = (Math.random() - 0.5) * 6 * falloff / Math.sqrt(c.mass);
-      c.angVel += torque;
+      c.vx += (dx / dist) * impulse;
+      c.vy += (dy / dist) * impulse;
+      c.angVel += ((Math.random() - 0.5) * 6 * falloff) / Math.sqrt(c.mass);
     }
   }
 }
 
-// --- 4. UPDATE & RENDER LOOP ---
+// Fungsi menggambar path lingkaran bergelombang (Wavy Circle)
+function traceWavyCircle(ctx, cx, cy, baseRadius, freq, amp, phase) {
+  const segments = 64; // Cukup halus tapi sangat ringan di CPU mobile
+  ctx.beginPath();
+  for (let i = 0; i <= segments; i++) {
+    const theta = (i / segments) * Math.PI * 2;
+    // Kombinasi 2 frekuensi sinus agar gelombang terlihat alami tidak simetris kaku
+    const wave = Math.sin(theta * freq + phase) * amp
+               + Math.cos(theta * (freq * 0.5) - phase * 1.3) * (amp * 0.45);
+    const r = Math.max(1, baseRadius + wave);
+    const px = cx + Math.cos(theta) * r;
+    const py = cy + Math.sin(theta) * r;
+    if (i === 0) ctx.moveTo(px, py);
+    else ctx.lineTo(px, py);
+  }
+  ctx.closePath();
+}
+
+// --- 4. UPDATE & RENDER ---
 function update(dt) {
   camera.update(dt);
 
-  // Update posisi kelompok sel (hukum Newton tanpa rem, cuma pantul tepi layar biar gak hilang saat tes)
   for (const c of cellClusters) {
     c.x += c.vx * dt;
     c.y += c.vy * dt;
     c.angle += c.angVel * dt;
 
-    // Sedikit redaman ruang uji agar objek tidak hilang permanen keluar layar
     c.vx *= 0.992;
     c.vy *= 0.992;
     c.angVel *= 0.99;
@@ -201,15 +206,14 @@ function update(dt) {
     if (c.y > H - pad) { c.y = H - pad; c.vy *= -0.6; }
   }
 
-  // Update gelombang kejut
   for (let i = shockwaves.length - 1; i >= 0; i--) {
     const sw = shockwaves[i];
     sw.radius += sw.speed * dt;
+    sw.phase += dt * 28; // Kecepatan getaran riak pinggiran
     sw.life = 1 - (sw.radius / sw.maxRadius);
     if (sw.life <= 0) shockwaves.splice(i, 1);
   }
 
-  // Update percikan
   for (let i = sparks.length - 1; i >= 0; i--) {
     const sp = sparks[i];
     sp.x += sp.vx * dt;
@@ -226,13 +230,12 @@ function draw() {
   ctx.fillRect(0, 0, W, H);
 
   ctx.save();
-  // Terapkan goyangan kamera
   camera.apply(ctx);
 
-  // Grid tipis latar belakang (patokan pergerakan)
-  ctx.strokeStyle = '#111827';
+  // Grid latar belakang (agar efek transparan gelombang terlihat jelas saat melewatinya)
+  ctx.strokeStyle = '#141d2e';
   ctx.lineWidth = 1;
-  const gridStep = 64; // 4 sel
+  const gridStep = 48; // 3 sel
   for (let gx = 0; gx < W; gx += gridStep) {
     ctx.beginPath(); ctx.moveTo(gx, 0); ctx.lineTo(gx, H); ctx.stroke();
   }
@@ -240,7 +243,7 @@ function draw() {
     ctx.beginPath(); ctx.moveTo(0, gy); ctx.lineTo(W, gy); ctx.stroke();
   }
 
-  // Gambar kelompok sel (16x16 px per sel)
+  // Gambar kelompok sel
   for (const c of cellClusters) {
     ctx.save();
     ctx.translate(c.x, c.y);
@@ -269,37 +272,55 @@ function draw() {
   // Gambar percikan
   for (const sp of sparks) {
     const alpha = Math.max(0, sp.life / sp.maxLife);
-    ctx.fillStyle = `rgba(253, 224, 71, ${alpha})`;
+    ctx.fillStyle = `rgba(253, 224, 71, ${alpha * 0.85})`;
     ctx.fillRect(sp.x - 2, sp.y - 2, 4, 4);
   }
 
-  // Gambar gelombang kejut (Shockwave)
+  // Gambar gelombang kejut transparan beriak
   for (const sw of shockwaves) {
     ctx.save();
-    ctx.beginPath();
-    ctx.arc(sw.x, sw.y, sw.radius, 0, Math.PI * 2);
-    // Garis tebal di awal ledakan, menipis dan memudar saat membesar
-    ctx.lineWidth = Math.max(1.5, 22 * sw.life);
-    ctx.strokeStyle = `rgba(${sw.color}, ${sw.life * 0.85})`;
+    // Mode 'lighter' membuat gelombang terlihat seperti cahaya/energi bening tanpa menutup objek di bawahnya
+    ctx.globalCompositeOperation = 'lighter';
+
+    const currentAmp = sw.amp * sw.life;
+    const outerR = sw.radius + currentAmp + 6;
+    const innerR = Math.max(0, sw.radius * 0.72);
+
+    // 1. Isi gradien radial transparan (bening di tengah, sedikit berkilau di tepi gelombang)
+    const grad = ctx.createRadialGradient(sw.x, sw.y, innerR, sw.x, sw.y, outerR);
+    grad.addColorStop(0.0, `rgba(${sw.tint}, 0)`);
+    grad.addColorStop(0.65, `rgba(${sw.tint}, ${sw.life * 0.05})`);
+    grad.addColorStop(0.88, `rgba(${sw.tint}, ${sw.life * 0.16})`);
+    grad.addColorStop(1.0, `rgba(${sw.tint}, 0)`);
+
+    traceWavyCircle(ctx, sw.x, sw.y, sw.radius, sw.freq, currentAmp, sw.phase);
+    ctx.fillStyle = grad;
+    ctx.fill();
+
+    // 2. Garis riak tepi tipis yang sangat transparan
+    ctx.lineWidth = Math.max(1, 5 * sw.life);
+    ctx.strokeStyle = `rgba(${sw.tint}, ${sw.life * 0.28})`;
     ctx.stroke();
 
-    // Kilatan isi transparan tipis di dalam cincin
-    ctx.fillStyle = `rgba(${sw.color}, ${sw.life * 0.08})`;
-    ctx.fill();
+    // 3. Bayangan riak dalam (memberi kesan gelombang tekanan berlapis)
+    if (sw.radius > 25) {
+      traceWavyCircle(ctx, sw.x, sw.y, sw.radius - 14, sw.freq, currentAmp * 0.7, -sw.phase);
+      ctx.lineWidth = Math.max(1, 2.5 * sw.life);
+      ctx.strokeStyle = `rgba(${sw.tint}, ${sw.life * 0.15})`;
+      ctx.stroke();
+    }
+
     ctx.restore();
   }
 
   ctx.restore();
 }
 
-// Input tap / klik
 canvas.addEventListener('pointerdown', (e) => {
   triggerExplosion(e.clientX, e.clientY);
 });
 
-// Inisialisasi & Loop utama
 spawnTestClusters();
-// Ledakan pembuka otomatis di tengah setelah 0.4 detik
 setTimeout(() => triggerExplosion(W / 2, H / 2), 400);
 
 let lastTime = performance.now();
