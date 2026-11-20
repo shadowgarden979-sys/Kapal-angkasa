@@ -1,0 +1,328 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no" />
+  <title>Uji Gelombang Kejut & Dorongan Sel</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      background: #07090f;
+      overflow: hidden;
+      font-family: monospace;
+      color: #cbd5e1;
+      touch-action: none;
+    }
+    canvas { display: block; }
+    #hud {
+      position: fixed;
+      top: 12px;
+      left: 12px;
+      background: rgba(15, 23, 42, 0.75);
+      border: 1px solid #334155;
+      padding: 8px 12px;
+      border-radius: 6px;
+      pointer-events: none;
+      font-size: 13px;
+      line-height: 1.5;
+    }
+    .highlight { color: #38bdf8; font-weight: bold; }
+  </style>
+</head>
+<body>
+  <div id="hud">
+    <div><span class="highlight">TAP / KLIK LAYAR</span> : Picu Ledakan Reaktor</div>
+    <div>FPS: <span id="fps" class="highlight">60</span> | Objek Sel: <span id="count">0</span></div>
+  </div>
+  <canvas id="c"></canvas>
+
+<script>
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+const fpsEl = document.getElementById('fps');
+const countEl = document.getElementById('count');
+
+let W = canvas.width = window.innerWidth;
+let H = canvas.height = window.innerHeight;
+window.addEventListener('resize', () => {
+  W = canvas.width = window.innerWidth;
+  H = canvas.height = window.innerHeight;
+});
+
+// Skala sesuai spek: 1 sel = 16x16 px
+const CELL_SIZE = 16;
+
+// --- 1. SISTEM KAMERA MATI + SCREEN SHAKE ---
+const camera = {
+  trauma: 0,       // 0.0 sampai 1.0
+  maxOffset: 28,   // Maksimal goyangan dalam piksel
+  time: 0,
+  addTrauma(amount) {
+    this.trauma = Math.min(1, this.trauma + amount);
+  },
+  update(dt) {
+    this.time += dt;
+    // Meluruh habis dalam ~0.6 detik
+    this.trauma = Math.max(0, this.trauma - dt * 1.6);
+  },
+  apply(ctx) {
+    if (this.trauma <= 0.001) return;
+    // Kuadratkan trauma agar getaran awal keras lalu mereda halus
+    const shake = this.trauma * this.trauma;
+    const ox = Math.sin(this.time * 65) * this.maxOffset * shake;
+    const oy = Math.cos(this.time * 53) * this.maxOffset * shake;
+    ctx.translate(ox, oy);
+  }
+};
+
+// --- 2. OBJEK KELOMPOK SEL (TARGET DORONGAN) ---
+const cellClusters = [];
+
+function spawnTestClusters() {
+  cellClusters.length = 0;
+  const cx = W / 2;
+  const cy = H / 2;
+
+  // Ukuran dalam satuan sel (1 sel = 16x16 px)
+  const presets = [
+    { cols: 3, rows: 3, x: cx - 140, y: cy - 90,  color: '#38bdf8' }, // Ringan
+    { cols: 4, rows: 2, x: cx + 130, y: cy - 110, color: '#4ade80' }, // Ringan
+    { cols: 6, rows: 6, x: cx - 180, y: cy + 120, color: '#facc15' }, // Sedang
+    { cols: 8, rows: 5, x: cx + 170, y: cy + 100, color: '#fb923c' }, // Berat
+    { cols: 2, rows: 2, x: cx,       y: cy - 180, color: '#f472b6' }  // Sangat ringan
+  ];
+
+  for (const p of presets) {
+    const totalCells = p.cols * p.rows;
+    cellClusters.push({
+      x: p.x,
+      y: p.y,
+      vx: 0,
+      vy: 0,
+      angle: 0,
+      angVel: 0,
+      cols: p.cols,
+      rows: p.rows,
+      mass: totalCells, // Massa = jumlah sel
+      color: p.color
+    });
+  }
+  countEl.textContent = cellClusters.reduce((sum, c) => sum + c.mass, 0);
+}
+
+// --- 3. DAFTAR GELOMBANG KEJUT & PERCIKAN ---
+const shockwaves = [];
+const sparks = [];
+
+function triggerExplosion(x, y) {
+  const maxRadius = 480;   // Jangkauan gelombang kejut (px)
+  const baseForce = 1800;  // Kekuatan dorong dasar
+
+  // Tambah goyangan kamera
+  camera.addTrauma(0.95);
+
+  // Cincin utama (gelombang kejut)
+  shockwaves.push({
+    x, y,
+    radius: 8,
+    maxRadius,
+    speed: 1100,     // Kecepatan rambat gelombang (px/s)
+    life: 1.0,       // 1.0 -> 0.0
+    color: '186, 230, 253' // Biru muda plasma (RGB)
+  });
+
+  // Cincin kedua (susulan panas inti reaktor)
+  shockwaves.push({
+    x, y,
+    radius: 4,
+    maxRadius: maxRadius * 0.55,
+    speed: 650,
+    life: 1.0,
+    color: '251, 146, 60' // Oranye panas (RGB)
+  });
+
+  // Percikan ringan (24 butir)
+  for (let i = 0; i < 24; i++) {
+    const a = (Math.PI * 2 * i) / 24 + (Math.random() - 0.5) * 0.2;
+    const spd = 120 + Math.random() * 380;
+    sparks.push({
+      x, y,
+      vx: Math.cos(a) * spd,
+      vy: Math.sin(a) * spd,
+      life: 0.4 + Math.random() * 0.35,
+      maxLife: 0.75
+    });
+  }
+
+  // Hitung dorongan fisik (Impulse) ke setiap kelompok sel
+  for (const c of cellClusters) {
+    const dx = c.x - x;
+    const dy = c.y - y;
+    const dist = Math.hypot(dx, dy);
+
+    if (dist < maxRadius && dist > 1) {
+      // Makin dekat pusat ledakan, faktor makin mendekati 1.0
+      const falloff = 1 - (dist / maxRadius);
+      // Dorongan dibagi massa (jumlah sel) -> sel sedikit mental jauh, sel banyak cuma geser
+      const impulse = (baseForce * falloff * falloff) / Math.sqrt(c.mass);
+
+      const nx = dx / dist;
+      const ny = dy / dist;
+
+      c.vx += nx * impulse;
+      c.vy += ny * impulse;
+
+      // Tambah efek putaran acak saat kena hantaman gelombang
+      const torque = (Math.random() - 0.5) * 6 * falloff / Math.sqrt(c.mass);
+      c.angVel += torque;
+    }
+  }
+}
+
+// --- 4. UPDATE & RENDER LOOP ---
+function update(dt) {
+  camera.update(dt);
+
+  // Update posisi kelompok sel (hukum Newton tanpa rem, cuma pantul tepi layar biar gak hilang saat tes)
+  for (const c of cellClusters) {
+    c.x += c.vx * dt;
+    c.y += c.vy * dt;
+    c.angle += c.angVel * dt;
+
+    // Sedikit redaman ruang uji agar objek tidak hilang permanen keluar layar
+    c.vx *= 0.992;
+    c.vy *= 0.992;
+    c.angVel *= 0.99;
+
+    const pad = 40;
+    if (c.x < pad) { c.x = pad; c.vx *= -0.6; }
+    if (c.x > W - pad) { c.x = W - pad; c.vx *= -0.6; }
+    if (c.y < pad) { c.y = pad; c.vy *= -0.6; }
+    if (c.y > H - pad) { c.y = H - pad; c.vy *= -0.6; }
+  }
+
+  // Update gelombang kejut
+  for (let i = shockwaves.length - 1; i >= 0; i--) {
+    const sw = shockwaves[i];
+    sw.radius += sw.speed * dt;
+    sw.life = 1 - (sw.radius / sw.maxRadius);
+    if (sw.life <= 0) shockwaves.splice(i, 1);
+  }
+
+  // Update percikan
+  for (let i = sparks.length - 1; i >= 0; i--) {
+    const sp = sparks[i];
+    sp.x += sp.vx * dt;
+    sp.y += sp.vy * dt;
+    sp.vx *= 0.95;
+    sp.vy *= 0.95;
+    sp.life -= dt;
+    if (sp.life <= 0) sparks.splice(i, 1);
+  }
+}
+
+function draw() {
+  ctx.fillStyle = '#07090f';
+  ctx.fillRect(0, 0, W, H);
+
+  ctx.save();
+  // Terapkan goyangan kamera
+  camera.apply(ctx);
+
+  // Grid tipis latar belakang (patokan pergerakan)
+  ctx.strokeStyle = '#111827';
+  ctx.lineWidth = 1;
+  const gridStep = 64; // 4 sel
+  for (let gx = 0; gx < W; gx += gridStep) {
+    ctx.beginPath(); ctx.moveTo(gx, 0); ctx.lineTo(gx, H); ctx.stroke();
+  }
+  for (let gy = 0; gy < H; gy += gridStep) {
+    ctx.beginPath(); ctx.moveTo(0, gy); ctx.lineTo(W, gy); ctx.stroke();
+  }
+
+  // Gambar kelompok sel (16x16 px per sel)
+  for (const c of cellClusters) {
+    ctx.save();
+    ctx.translate(c.x, c.y);
+    ctx.rotate(c.angle);
+
+    const wPx = c.cols * CELL_SIZE;
+    const hPx = c.rows * CELL_SIZE;
+    const startX = -wPx / 2;
+    const startY = -hPx / 2;
+
+    ctx.fillStyle = c.color;
+    ctx.strokeStyle = '#0f172a';
+    ctx.lineWidth = 1.5;
+
+    for (let r = 0; r < c.rows; r++) {
+      for (let col = 0; col < c.cols; col++) {
+        const px = startX + col * CELL_SIZE;
+        const py = startY + r * CELL_SIZE;
+        ctx.fillRect(px, py, CELL_SIZE, CELL_SIZE);
+        ctx.strokeRect(px, py, CELL_SIZE, CELL_SIZE);
+      }
+    }
+    ctx.restore();
+  }
+
+  // Gambar percikan
+  for (const sp of sparks) {
+    const alpha = Math.max(0, sp.life / sp.maxLife);
+    ctx.fillStyle = `rgba(253, 224, 71, ${alpha})`;
+    ctx.fillRect(sp.x - 2, sp.y - 2, 4, 4);
+  }
+
+  // Gambar gelombang kejut (Shockwave)
+  for (const sw of shockwaves) {
+    ctx.save();
+    ctx.beginPath();
+    ctx.arc(sw.x, sw.y, sw.radius, 0, Math.PI * 2);
+    // Garis tebal di awal ledakan, menipis dan memudar saat membesar
+    ctx.lineWidth = Math.max(1.5, 22 * sw.life);
+    ctx.strokeStyle = `rgba(${sw.color}, ${sw.life * 0.85})`;
+    ctx.stroke();
+
+    // Kilatan isi transparan tipis di dalam cincin
+    ctx.fillStyle = `rgba(${sw.color}, ${sw.life * 0.08})`;
+    ctx.fill();
+    ctx.restore();
+  }
+
+  ctx.restore();
+}
+
+// Input tap / klik
+canvas.addEventListener('pointerdown', (e) => {
+  triggerExplosion(e.clientX, e.clientY);
+});
+
+// Inisialisasi & Loop utama
+spawnTestClusters();
+// Ledakan pembuka otomatis di tengah setelah 0.4 detik
+setTimeout(() => triggerExplosion(W / 2, H / 2), 400);
+
+let lastTime = performance.now();
+let frames = 0;
+let fpsTimer = 0;
+
+function loop(now) {
+  const dt = Math.min(0.05, (now - lastTime) / 1000);
+  lastTime = now;
+
+  frames++;
+  fpsTimer += dt;
+  if (fpsTimer >= 0.5) {
+    fpsEl.textContent = Math.round(frames / fpsTimer);
+    frames = 0;
+    fpsTimer = 0;
+  }
+
+  update(dt);
+  draw();
+  requestAnimationFrame(loop);
+}
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>
