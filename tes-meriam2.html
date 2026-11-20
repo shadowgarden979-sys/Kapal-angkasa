@@ -41,11 +41,11 @@
         const TINGKAT_BERIKUT = [0, 0, 1, 2, 2, 4];
         const TINGKAT_DURASI = [0, 3, 2, 1, 1, 1];
 
-        // Komponen meriam (ukuran dalam piksel kanvas)
-        const JARAK_LARAS = 11, LARAS_OFFSET_Y = -115, PIVOT_Y_OFFSET = 22;
-        const RUMAH_W = 98, RUMAH_H = 109;
+        // Komponen meriam (dalam piksel kanvas; pivot = pusat rumah = (64, 120) di kanvas turret 128×192)
+        const JARAK_LARAS = 11;        // jarak laras tengah ke kanan dan kiri
+        const LARAS_OFFSET_Y = -120;   // ujung laras diam, 120 piksel di atas pivot
         const RECOIL_MAX = 50, RECOIL_DURASI = 0.35, FIRE_INTERVAL = 0.15;
-        const KECEPATAN_PELURU = 800, PELURU_W = 7, PELURU_H = 24;
+        const KECEPATAN_PELURU = 800, PELURU_W = 6, PELURU_H = 18;
         const KILATAN_SKALA = 0.25, KILATAN_DURASI = 0.06, KILATAN_MAJU = 0.5;
 
         // Kamera dan level detail
@@ -68,10 +68,10 @@
         window.addEventListener('resize', resize);
         resize();
 
-        const imgAlas = new Image(); imgAlas.src = "alas.png";
-        const imgRumah = new Image(); imgRumah.src = "rumah-laras.png";
-        const imgLaras = new Image(); imgLaras.src = "laras.png";
-        const imgPeluru = new Image(); imgPeluru.src = "peluru.png";
+        const imgAlas = new Image(); imgAlas.src = "alas.png";           // 128×144
+        const imgRumah = new Image(); imgRumah.src = "rumah-laras.png";  // 128×144
+        const imgLaras = new Image(); imgLaras.src = "laras.png";        // 128×192, hanya laras tengah
+        const imgPeluru = new Image(); imgPeluru.src = "peluru.png";     // 6×18
         const imgSel = new Image(); imgSel.src = "sel1.png";
         const imgKilatan1 = new Image(); imgKilatan1.src = "kilatan1.png";
         const imgKilatan2 = new Image(); imgKilatan2.src = "kilatan2.png";
@@ -101,16 +101,16 @@
 
         // ==========================================
         // 4. DUNIA (sel, chunk, panas, radar)
-        // Modul ini tidak tahu apa-apa tentang meriam.
+        // Tidak tahu apa-apa tentang meriam.
         // ==========================================
         const dunia = {
             chunks: new Map(),
             sels: [],
-            hot: new Set(),       // sel yang punya piksel panas
-            aktif: new Set(),     // sel yang punya radar atau efek kena
-            kotor: new Set(),     // chunk yang perlu digambar ulang
-            habis: [],            // sel yang pikselnya habis, dibuang di frame berikutnya
-            piksel: 0,            // penghitung total piksel, diperbarui saat berubah
+            hot: new Set(),
+            aktif: new Set(),
+            kotor: new Set(),
+            habis: [],
+            piksel: 0,
             klusterKotor: true,
             kluster: [],
             antrean: [],
@@ -274,7 +274,6 @@
             }
         }
 
-        // Pendinginan satu sel, hanya dipanggil untuk sel di dunia.hot
         function updateDingin(c, dt) {
             const list = c.panas;
             for (let k = list.length - 1; k >= 0; k--) {
@@ -305,7 +304,6 @@
             c.hot = list.length;
         }
 
-        // Radar: tandai sel di dalam kotak radar. Dipanggil oleh peluru.
         function cekRadar(x, y) {
             const cx = Math.floor(x / CHUNK_W), cy = Math.floor(y / CHUNK_W);
             const m = RADAR_MARGIN;
@@ -328,7 +326,6 @@
             }
         }
 
-        // Peluru meledak di titik jamur: panas menyebar ke sekitar titik berhenti
         function buatJamur(c, lx, ly, tingkat, sudut) {
             const cs = Math.cos(sudut), sn = Math.sin(sudut);
             for (let dy = -4; dy <= 4; dy++) {
@@ -347,7 +344,6 @@
             }
         }
 
-        // Pemrosesan per frame untuk dunia: pendinginan, radar, dan pembuangan sel habis
         function updateDunia(dt) {
             for (const c of dunia.hot) {
                 updateDingin(c, dt);
@@ -471,7 +467,6 @@
             dunia.kluster = hasil;
         }
 
-        // Siluet satu kelompok: gabungan siluet semua chunk di dalamnya
         function buatCanvasKluster(k) {
             const c = document.createElement('canvas');
             c.width = k.gw * CHUNK_SEL;
@@ -486,7 +481,9 @@
 
         // ==========================================
         // 6. KOMPONEN MERIAM
-        // Meriam tidak tahu apa-apa tentang sel. Ia hanya menghasilkan peluru.
+        // Ruang turret 128×192. Pivot = pusat rumah = (64, 120) di ruang itu.
+        // Alas dan rumah 128×144 digambar di (-64, -72) relatif pivot.
+        // Laras 128×192 digambar di (-64 + geser, -120 + recoil) relatif pivot.
         // ==========================================
         let siluetAlas = null, siluetTurret = null, siluetSiap = false;
 
@@ -495,56 +492,47 @@
             if (!imgAlas.complete || !imgRumah.complete || !imgLaras.complete) return;
             if (imgAlas.naturalWidth === 0 || imgLaras.naturalWidth === 0) return;
 
-            const aw = imgAlas.naturalWidth, ah = imgAlas.naturalHeight;
-            const sa = Math.max(aw, ah) + 8;
+            // Alas: 128×144
             siluetAlas = document.createElement('canvas');
-            siluetAlas.width = sa; siluetAlas.height = sa;
+            siluetAlas.width = 128; siluetAlas.height = 144;
             const ga = siluetAlas.getContext('2d');
-            ga.drawImage(imgAlas, sa / 2 - aw / 2, sa / 2 - ah / 2);
+            ga.drawImage(imgAlas, 0, 0);
             ga.globalCompositeOperation = 'source-in';
             ga.fillStyle = '#cbd5e1';
-            ga.fillRect(0, 0, sa, sa);
+            ga.fillRect(0, 0, 128, 144);
 
-            const st = 320;
+            // Turret: rumah 128×144 dan tiga laras 128×192, satu ruang yang sama
             siluetTurret = document.createElement('canvas');
-            siluetTurret.width = st; siluetTurret.height = st;
+            siluetTurret.width = 128; siluetTurret.height = 192;
             const gt = siluetTurret.getContext('2d');
-            gt.translate(st / 2, st / 2);
-            const lw = imgLaras.naturalWidth;
-            gt.drawImage(imgLaras, -lw / 2 - JARAK_LARAS, LARAS_OFFSET_Y);
-            gt.drawImage(imgLaras, -lw / 2, LARAS_OFFSET_Y);
-            gt.drawImage(imgLaras, -lw / 2 + JARAK_LARAS, LARAS_OFFSET_Y);
-            gt.drawImage(imgRumah, 0, 76, RUMAH_W, RUMAH_H, -RUMAH_W / 2, -RUMAH_H / 2, RUMAH_W, RUMAH_H);
-            gt.setTransform(1, 0, 0, 1, 0, 0);
+            for (const g of [-JARAK_LARAS, 0, JARAK_LARAS]) {
+                gt.drawImage(imgLaras, g, 0);
+            }
+            gt.drawImage(imgRumah, 0, 48);
             gt.globalCompositeOperation = 'source-in';
             gt.fillStyle = '#cbd5e1';
-            gt.fillRect(0, 0, st, st);
+            gt.fillRect(0, 0, 128, 192);
 
             siluetSiap = true;
         }
 
         function buatMeriam(x, y) {
             return {
-                x, y,                 // posisi pivot di dunia (sebelum offset pivot)
+                x, y,                 // pivot di dunia
                 sudut: -Math.PI / 2,  // sudut sekarang
                 bidik: -Math.PI / 2,  // sudut yang diinginkan
-                giliran: 0,           // laras yang menembak berikutnya: 0 kiri, 1 tengah, 2 kanan
-                recoil: [0, 0, 0],    // recoil tiap laras
+                giliran: 0,           // 0 kiri, 1 tengah, 2 kanan
+                recoil: [0, 0, 0],
                 cooldown: 0,
-                api: false            // tombol tembak ditahan
+                api: false
             };
         }
 
-        function pivotMeriam(m) {
-            return { x: m.x, y: m.y + PIVOT_Y_OFFSET };
-        }
-
-        // Titik di laras, dihitung dalam dunia dengan memutar sesuai sudut meriam
+        // Titik di laras, dihitung di dunia dengan memutar sesuai sudut meriam
         function muzzleMeriam(m, ox, oy) {
-            const p = pivotMeriam(m);
             const c = Math.cos(m.sudut + Math.PI / 2);
             const s = Math.sin(m.sudut + Math.PI / 2);
-            return { x: p.x + (ox * c - oy * s), y: p.y + (ox * s + oy * c) };
+            return { x: m.x + (ox * c - oy * s), y: m.y + (ox * s + oy * c) };
         }
 
         function updateMeriam(m, dt) {
@@ -564,10 +552,11 @@
             sfxTembak.currentTime = 0;
             sfxTembak.play().catch(() => {});
 
-            const offsetX = [-JARAK_LARAS, 0, JARAK_LARAS][m.giliran];
+            const geser = [-JARAK_LARAS, 0, JARAK_LARAS][m.giliran];
             m.recoil[m.giliran] = RECOIL_MAX;
 
-            const mulut = muzzleMeriam(m, offsetX, LARAS_OFFSET_Y);
+            // Ujung laras diam, jadi titik peluru tidak ikut recoil
+            const mulut = muzzleMeriam(m, geser, LARAS_OFFSET_Y);
             tambahPeluru(mulut.x, mulut.y, m.sudut);
             tambahKilatan(mulut.x, mulut.y, m.sudut, m.giliran === 2 ? imgKilatan2 : imgKilatan1);
 
@@ -575,7 +564,6 @@
             m.cooldown = FIRE_INTERVAL;
         }
 
-        // Titik spawn sel: di depan moncong tengah meriam
         function titikSpawnSel(m, jarak) {
             const mulut = muzzleMeriam(m, 0, LARAS_OFFSET_Y);
             return {
@@ -586,7 +574,6 @@
 
         // ==========================================
         // 7. PELURU
-        // Peluru tidak tahu bentuk meriam. Ia hanya bergerak dan memanggil dunia.
         // ==========================================
         const peluru = [];
         const efek = [];
@@ -741,7 +728,7 @@
         }
 
         // ==========================================
-        // 9. WARNA DAN SPRITE
+        // 9. INIT
         // ==========================================
         function initSiap() {
             if (!imgSel.complete) return false;
@@ -935,7 +922,6 @@
                 return;
             }
 
-            // dekat dan sedang: canvas per chunk, lalu efek sel yang aktif
             const ukuranLayar = CHUNK_W * kamera.skala;
             for (const ch of dunia.chunks.values()) {
                 const sx = toScreenX(ch.x), sy = toScreenY(ch.y);
@@ -968,44 +954,34 @@
             }
         }
 
-        // Komponen meriam digambar di tengah layar. Detail atau siluet tergantung level.
+        // Meriam digambar dengan pivot di tengah layar. Alas diam, rumah dan laras berputar.
         function gambarMeriam(m, level) {
             const cx = canvas.width / 2, cy = canvas.height / 2;
             const detail = (level === 'dekat' || level === 'sedang');
 
+            ctx.save();
+            ctx.translate(cx, cy);
+            ctx.scale(kamera.skala, kamera.skala);
+
             if (detail || !siluetSiap) {
-                ctx.save();
-                ctx.translate(cx, cy);
-                ctx.scale(kamera.skala, kamera.skala);
+                // Alas diam
+                ctx.drawImage(imgAlas, -64, -72);
 
-                if (imgAlas.complete && imgAlas.naturalWidth > 0) {
-                    ctx.drawImage(imgAlas, -imgAlas.width / 2, -imgAlas.height / 2);
-                }
-
-                ctx.translate(0, PIVOT_Y_OFFSET);
+                // Rumah dan laras berputar di pivot
                 ctx.rotate(m.sudut + Math.PI / 2);
 
-                if (imgLaras.complete && imgLaras.naturalWidth > 0) {
-                    ctx.drawImage(imgLaras, -imgLaras.width / 2 - JARAK_LARAS, LARAS_OFFSET_Y + m.recoil[0]);
-                    ctx.drawImage(imgLaras, -imgLaras.width / 2, LARAS_OFFSET_Y + m.recoil[1]);
-                    ctx.drawImage(imgLaras, -imgLaras.width / 2 + JARAK_LARAS, LARAS_OFFSET_Y + m.recoil[2]);
+                const geser = [-JARAK_LARAS, 0, JARAK_LARAS];
+                for (let i = 0; i < 3; i++) {
+                    ctx.drawImage(imgLaras, -64 + geser[i], -120 + m.recoil[i]);
                 }
-
-                if (imgRumah.complete && imgRumah.naturalWidth > 0) {
-                    ctx.drawImage(imgRumah, 0, 76, RUMAH_W, RUMAH_H,
-                                  -RUMAH_W / 2, -RUMAH_H / 2, RUMAH_W, RUMAH_H);
-                }
-                ctx.restore();
+                ctx.drawImage(imgRumah, -64, -72);
             } else {
-                ctx.save();
-                ctx.translate(cx, cy);
-                ctx.scale(kamera.skala, kamera.skala);
-                ctx.drawImage(siluetAlas, -siluetAlas.width / 2, -siluetAlas.height / 2);
-                ctx.translate(0, PIVOT_Y_OFFSET);
+                ctx.drawImage(siluetAlas, -64, -72);
                 ctx.rotate(m.sudut + Math.PI / 2);
-                ctx.drawImage(siluetTurret, -siluetTurret.width / 2, -siluetTurret.height / 2);
-                ctx.restore();
+                ctx.drawImage(siluetTurret, -64, -120);
             }
+
+            ctx.restore();
         }
 
         function gambarEfek() {
@@ -1201,7 +1177,6 @@
 
         // ==========================================
         // 12. LOOP UTAMA
-        // Urutan: meriam diperbarui, dunia diperbarui, lalu semuanya digambar.
         // ==========================================
         let lastTime = performance.now();
 
@@ -1228,9 +1203,9 @@
                 dunia.klusterKotor = false;
             }
 
-            // Meriam utama menempel di tengah kamera (diam di layar saat digeser)
+            // Meriam menempel di pusat kamera, jadi diam di layar saat digeser
             meriamUtama.x = kamera.x;
-            meriamUtama.y = kamera.y;
+            meriamUtama.y = kamera.y + 0;
             meriamUtama.api = [...pointers.values()].some(v => v.role === 'fire');
             updateMeriam(meriamUtama, dt);
 
