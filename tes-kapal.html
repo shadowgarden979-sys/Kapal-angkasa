@@ -1,0 +1,645 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>Tes Kapal</title>
+<style>
+body,html{margin:0;padding:0;width:100%;height:100%;overflow:hidden;background:#07080d;font-family:monospace}
+canvas{display:block;touch-action:none}
+</style>
+</head>
+<body>
+<canvas id="gameCanvas"></canvas>
+
+<script>
+// ==========================================
+// 1. ASET DAN KONFIGURASI
+// ==========================================
+const canvas = document.getElementById('gameCanvas');
+const ctx = canvas.getContext('2d');
+
+function resize() {
+    canvas.width = window.innerWidth;
+    canvas.height = window.innerHeight;
+    ctx.imageSmoothingEnabled = false;
+}
+window.addEventListener('resize', resize);
+resize();
+
+const ASET = {
+    rangka: 'kerangka-144×80px.png',
+    intiHidup: 'intireaktorhidup-32×32px.png',
+    intiMati: 'intireaktormati-32×32px.png',
+    utama: 'pendorong-32×48px.png',
+    kecil: 'pendorongsamping-16×16px.png',
+    sel: 'sel-16×16px.png',
+    efek: 'efek-pendorong.png'
+};
+const gbr = {};
+for (const k in ASET) { gbr[k] = new Image(); gbr[k].src = ASET[k]; }
+
+const KW = 144, KH = 80, C = 16, PX = 72, PY = 40;     // kanvas kerangka dan pusatnya
+const INTI = { x: 28, y: 26, w: 88, h: 32 };          // posisi inti di kanvas kerangka
+const A_UTAMA = 20, A_MUNDUR = 15, A_SAMPING = 15;    // px/s² per pendorong (tebakan awal)
+const RAMP = 4;                                       // kecepatan api naik/turun (per detik)
+const ALFA_MAKS = 0.8, OMEGA_MAKS = 0.6;              // rad/s², rad/s
+const ARRIVE = 10, BERHENTI = 3;                      // px, px/s
+const SKALA_BANGUN = 2.5, SKALA_API = 0.25;
+const BATAS_I = [-4, 12], BATAS_J = [-4, 8];          // area bangun dalam sel (relatif kerangka)
+
+// Arah dorongan (fx, fy) di koordinat kapal: atas = maju (0,-1)
+const DEF = {
+    utama:  { fx: 0,  fy: -1, a: A_UTAMA,   w: 2, h: 3 },
+    mundur: { fx: 0,  fy: 1,  a: A_MUNDUR,  w: 1, h: 1 },
+    kiri:   { fx: 1,  fy: 0,  a: A_SAMPING, w: 1, h: 1 },
+    kanan:  { fx: -1, fy: 0,  a: A_SAMPING, w: 1, h: 1 }
+};
+const TOMBOL = [
+    ['utama', 'Utama'], ['mundur', 'Mundur'], ['kiri', 'Kiri'],
+    ['kanan', 'Kanan'], ['sel', 'Sel'], ['hapus', 'Hapus'], ['ok', 'OK']
+];
+
+// ==========================================
+// 2. STATUS
+// ==========================================
+const kamera = { x: 0, y: 0, skala: SKALA_BANGUN };
+let mode = 'bangun';          // 'bangun' atau 'uji'
+let pilihan = 'utama';        // pilihan di bilah
+let rangkaCells = null;       // daftar [i,j] sel kerangka dari alpha PNG
+let kapal = null;
+let rutaDraw = null;          // jalur yang sedang diseret
+let ptr = null;
+let sumR2 = 1;
+
+// ==========================================
+// 3. UTILITAS
+// ==========================================
+function kunci(i, j) { return i + ',' + j; }
+function clamp(v, a, b) { return Math.max(a, Math.min(b, v)); }
+function modp(a, m) { return ((a % m) + m) % m; }
+function sudutSelisih(a, b) {
+    let d = a - b;
+    while (d > Math.PI) d -= 2 * Math.PI;
+    while (d < -Math.PI) d += 2 * Math.PI;
+    return d;
+}
+// Sudut rotasi agar sumbu (0,1) berputar ke arah (dx,dy)
+function phi(dx, dy) { return Math.atan2(-dx, dy); }
+function toSX(x) { return (x - kamera.x) * kamera.skala + canvas.width / 2; }
+function toSY(y) { return (y - kamera.y) * kamera.skala + canvas.height / 2; }
+function dariSX(sx) { return (sx - canvas.width / 2) / kamera.skala + kamera.x; }
+function dariSY(sy) { return (sy - canvas.height / 2) / kamera.skala + kamera.y; }
+function dalam(p, r) { return p.x >= r.x && p.x <= r.x + r.w && p.y >= r.y && p.y <= r.y + r.h; }
+
+function overlapInti(i, j) {
+    const x0 = i * C, x1 = x0 + C, y0 = j * C, y1 = y0 + C;
+    return x0 < INTI.x + INTI.w && x1 > INTI.x && y0 < INTI.y + INTI.h && y1 > INTI.y;
+}
+
+// Sel kerangka: sel 16×16 yang punya piksel tidak transparan
+function bacaMask() {
+    const c = document.createElement('canvas');
+    c.width = KW; c.height = KH;
+    const g = c.getContext('2d');
+    g.drawImage(gbr.rangka, 0, 0);
+    const d = g.getImageData(0, 0, KW, KH).data;
+    const hasil = [];
+    for (let j = 0; j < KH / C; j++) {
+        for (let i = 0; i < KW / C; i++) {
+            let ada = false;
+            for (let y = 0; y < C && !ada; y++) {
+                for (let x = 0; x < C; x++) {
+                    const p = ((j * C + y) * KW + (i * C + x)) * 4;
+                    if (d[p + 3] > 0) { ada = true; break; }
+                }
+            }
+            if (ada) hasil.push([i, j]);
+        }
+    }
+    return hasil;
+}
+
+function buatKapalBaru() {
+    const k = {
+        x: 0, y: 0, vx: 0, vy: 0, th: 0, om: 0,
+        hidup: false,
+        cells: new Map(),   // key -> { i, j, tipe, thr }
+        thr: [],            // daftar pendorong
+        rute: null,         // { pts, akhir }
+        tersambung: 0
+    };
+    for (const [i, j] of rangkaCells) k.cells.set(kunci(i, j), { i, j, tipe: 'rangka', thr: null });
+    for (let j = 0; j < KH / C; j++) {
+        for (let i = 0; i < KW / C; i++) {
+            if (overlapInti(i, j)) k.cells.set(kunci(i, j), { i, j, tipe: 'inti', thr: null });
+        }
+    }
+    return k;
+}
+
+// ==========================================
+// 4. BANGUN KAPAL
+// ==========================================
+function bisaTaruh(fp) {
+    for (const [i, j] of fp) {
+        if (i < BATAS_I[0] || i > BATAS_I[1] || j < BATAS_J[0] || j > BATAS_J[1]) return false;
+        if (kapal.cells.has(kunci(i, j))) return false;
+    }
+    for (const [i, j] of fp) {
+        for (const [di, dj] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+            if (kapal.cells.has(kunci(i + di, j + dj))) return true;
+        }
+    }
+    return false;
+}
+
+function taruhSel(i, j) {
+    if (!bisaTaruh([[i, j]])) return;
+    kapal.cells.set(kunci(i, j), { i, j, tipe: 'sel', thr: null });
+}
+
+function taruhThruster(tipe, i, j) {
+    const d = DEF[tipe];
+    const fp = [];
+    for (let x = 0; x < d.w; x++) for (let y = 0; y < d.h; y++) fp.push([i + x, j + y]);
+    if (!bisaTaruh(fp)) return;
+
+    const t = {
+        tipe, i, j, w: d.w, h: d.h,
+        fx: d.fx, fy: d.fy, a: d.a,
+        daya: 0, target: 0, aktif: false,
+        rx: i * C + d.w * C / 2 - PX,     // titik dorong relatif pusat kapal
+        ry: j * C + d.h * C / 2 - PY,
+        alfaPenuh: 0,
+        cells: []
+    };
+    for (const [x, y] of fp) {
+        const key = kunci(x, y);
+        kapal.cells.set(key, { i: x, j: y, tipe: 'thr', thr: t });
+        t.cells.push(key);
+    }
+    kapal.thr.push(t);
+}
+
+function hapusDi(i, j) {
+    const c = kapal.cells.get(kunci(i, j));
+    if (!c) return;
+    if (c.tipe === 'sel') {
+        kapal.cells.delete(kunci(i, j));
+    } else if (c.tipe === 'thr') {
+        const t = c.thr;
+        for (const key of t.cells) kapal.cells.delete(key);
+        kapal.thr = kapal.thr.filter(x => x !== t);
+    }
+    // kerangka dan inti tidak bisa dihapus
+}
+
+function aksiGrid(i, j) {
+    if (i < BATAS_I[0] || i > BATAS_I[1] || j < BATAS_J[0] || j > BATAS_J[1]) return;
+    if (pilihan === 'hapus') return hapusDi(i, j);
+    if (pilihan === 'sel') return taruhSel(i, j);
+    taruhThruster(pilihan, i, j);
+}
+
+function layarKeKisi(sx, sy) {
+    const wx = dariSX(sx), wy = dariSY(sy);
+    return { i: Math.floor((wx + PX) / C), j: Math.floor((wy + PY) / C) };
+}
+
+// ==========================================
+// 5. KONEKSI DAYA
+// ==========================================
+// Dari inti, sel yang bersentuhan ikut tersambung. Pendorong aktif kalau salah satu selnya tersambung.
+function hitungKoneksi() {
+    const dikunjungi = new Set();
+    const q = [];
+    for (const [key, c] of kapal.cells) {
+        if (c.tipe === 'inti') { dikunjungi.add(key); q.push(key); }
+    }
+    while (q.length) {
+        const key = q.pop();
+        const c = kapal.cells.get(key);
+        for (const [di, dj] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+            const nk = kunci(c.i + di, c.j + dj);
+            if (!dikunjungi.has(nk) && kapal.cells.has(nk)) {
+                dikunjungi.add(nk);
+                q.push(nk);
+            }
+        }
+    }
+    for (const t of kapal.thr) t.aktif = kapal.hidup && t.cells.some(k => dikunjungi.has(k));
+    kapal.tersambung = dikunjungi.size;
+}
+
+// Momen inersia dan torsi per pendorong samping (dihitung ulang tiap frame)
+function hitungMoment() {
+    const M = Math.max(1, kapal.cells.size);
+    let s = 0;
+    for (const c of kapal.cells.values()) {
+        const rx = c.i * C + C / 2 - PX, ry = c.j * C + C / 2 - PY;
+        s += rx * rx + ry * ry;
+    }
+    sumR2 = Math.max(s, 1);
+    for (const t of kapal.thr) {
+        t.alfaPenuh = (t.rx * t.fy - t.ry * t.fx) * t.a * M / sumR2;
+    }
+}
+
+// ==========================================
+// 6. KENDALI (RUTE, REM, HADAP)
+// ==========================================
+function setir(hd) {
+    const k = kapal;
+    const err = sudutSelisih(hd, k.th);
+    const aD = clamp(2.5 * err - 1.8 * k.om, -ALFA_MAKS, ALFA_MAKS);
+    if (Math.abs(aD) < 0.005) return;
+    for (const t of k.thr) {
+        if (!t.aktif || (t.tipe !== 'kiri' && t.tipe !== 'kanan')) continue;
+        if (t.alfaPenuh * aD > 0) t.target = clamp(Math.abs(aD) / Math.abs(t.alfaPenuh), 0, 1);
+    }
+}
+
+function kendali() {
+    const k = kapal;
+    for (const t of k.thr) t.target = 0;
+    if (!k.rute || !k.hidup) return;
+
+    const fx = Math.sin(k.th), fy = -Math.cos(k.th);       // arah maju kapal
+    const vf = k.vx * fx + k.vy * fy;                       // kecepatan ke depan
+    const speed = Math.hypot(k.vx, k.vy);
+    const mundur = k.thr.filter(t => t.tipe === 'mundur' && t.aktif);
+    const utama = k.thr.filter(t => t.tipe === 'utama' && t.aktif);
+    const aBrake = mundur.length * A_MUNDUR;
+    const r = k.rute;
+
+    if (r.pts.length) {
+        const p = r.pts[0];
+        const dx = p.x - k.x, dy = p.y - k.y;
+        const dist = Math.hypot(dx, dy);
+        if (dist < ARRIVE) { r.pts.shift(); return; }
+
+        const hd = Math.atan2(dx, -dy);
+        const err = sudutSelisih(hd, k.th);
+        const jarakRem = (aBrake > 0 && vf > 0) ? (vf * vf) / (2 * aBrake) : 0;
+
+        if (dist <= jarakRem + ARRIVE) {
+            mundur.forEach(t => t.target = 1);            // rem
+        } else if (Math.abs(err) < 0.35) {
+            utama.forEach(t => t.target = 1);             // maju
+        }
+        setir(hd);
+        return;
+    }
+
+    // Titik henti terakhir: rem sampai berhenti, lalu hadap ke arah seretan terakhir
+    if (speed > BERHENTI) {
+        if (vf > 0) mundur.forEach(t => t.target = 1);
+        else utama.forEach(t => t.target = 1);
+    }
+    setir(r.akhir);
+    if (speed <= BERHENTI && Math.abs(sudutSelisih(r.akhir, k.th)) < 0.03 && Math.abs(k.om) < 0.02) {
+        k.rute = null;
+    }
+}
+
+// ==========================================
+// 7. FISIKA (inersia, tanpa gesekan di ruang kosong)
+// ==========================================
+function integrasi(dt) {
+    const k = kapal;
+    const M = Math.max(1, k.cells.size);
+
+    for (const t of k.thr) {
+        const tgt = t.aktif ? t.target : 0;
+        t.daya = clamp(t.daya + clamp(tgt - t.daya, -RAMP * dt, RAMP * dt), 0, 1);
+    }
+
+    let ax = 0, ay = 0, al = 0;
+    for (const t of k.thr) {
+        if (t.daya <= 0) continue;
+        const F = t.daya * t.a;
+        ax += t.fx * F;
+        ay += t.fy * F;
+        al += (t.rx * t.fy - t.ry * t.fx) * F * M / sumR2;
+    }
+
+    // Percepatan dari sumbu kapal ke dunia
+    const c = Math.cos(k.th), s = Math.sin(k.th);
+    k.vx += (ax * c - ay * s) * dt;
+    k.vy += (ax * s + ay * c) * dt;
+    k.x += k.vx * dt;
+    k.y += k.vy * dt;
+
+    k.om = clamp(k.om + al * dt, -OMEGA_MAKS, OMEGA_MAKS);
+    k.th += k.om * dt;
+}
+
+// ==========================================
+// 8. JALUR (seretan)
+// ==========================================
+function selesaikanRute() {
+    if (!rutaDraw || rutaDraw.length < 2) { kapal.rute = null; return; }
+
+    // Ambil titik tiap 30 piksel dunia, lalu tambahkan titik terakhir
+    const pts = [rutaDraw[0]];
+    let terakhir = rutaDraw[0];
+    for (const p of rutaDraw) {
+        if (Math.hypot(p.x - terakhir.x, p.y - terakhir.y) >= 30) { pts.push(p); terakhir = p; }
+    }
+    const ujung = rutaDraw[rutaDraw.length - 1];
+    if (pts[pts.length - 1] !== ujung) pts.push(ujung);
+
+    // Hadap akhir mengikuti arah seretan terakhir
+    const a = rutaDraw[rutaDraw.length - 2], b = ujung;
+    const akhir = Math.atan2(b.x - a.x, -(b.y - a.y));
+
+    const bersih = pts.slice(1);     // buang titik awal (posisi kapal)
+    kapal.rute = bersih.length ? { pts: bersih, akhir } : null;
+}
+
+// ==========================================
+// 9. TOMBOL DAN MODE
+// ==========================================
+function tombolBilah() {
+    const w = 46, g = 4, n = TOMBOL.length;
+    const total = n * w + (n - 1) * g;
+    const x0 = (canvas.width - total) / 2, y = canvas.height - 120;
+    return TOMBOL.map(([id, label], k) => ({ id, label, x: x0 + k * (w + g), y, w, h: 40 }));
+}
+
+function tombolBuild() {
+    return { id: 'build', label: 'BUILD', x: canvas.width - 86, y: 10, w: 76, h: 32 };
+}
+
+function masukBangun() {
+    mode = 'bangun';
+    kapal.hidup = false;
+    kapal.rute = null;
+    kapal.x = 0; kapal.y = 0;
+    kapal.vx = 0; kapal.vy = 0;
+    kapal.om = 0; kapal.th = 0;
+    kamera.x = 0; kamera.y = 0;
+    kamera.skala = SKALA_BANGUN;
+    rutaDraw = null;
+}
+
+function konfirm() {
+    mode = 'uji';
+    kapal.hidup = true;
+    kamera.skala = 1;
+    kamera.x = kapal.x;
+    kamera.y = kapal.y;
+}
+
+function aksiBilah(id) {
+    if (id === 'ok') konfirm();
+    else pilihan = id;
+}
+
+// ==========================================
+// 10. INPUT
+// ==========================================
+function posisiPointer(e) {
+    const r = canvas.getBoundingClientRect();
+    return { x: e.clientX - r.left, y: e.clientY - r.top };
+}
+
+canvas.addEventListener('pointerdown', e => {
+    e.preventDefault();
+    const p = posisiPointer(e);
+    ptr = { sx: p.x, sy: p.y, lx: p.x, ly: p.y, moved: false, aksi: '', target: null };
+
+    if (mode === 'bangun') {
+        const b = tombolBilah().find(t => dalam(p, t));
+        if (b) { ptr.aksi = 'bilah'; ptr.target = b.id; return; }
+        ptr.aksi = 'grid';
+    } else {
+        if (dalam(p, tombolBuild())) { ptr.aksi = 'build'; return; }
+        const wx = dariSX(p.x), wy = dariSY(p.y);
+        if (Math.hypot(wx - kapal.x, wy - kapal.y) < 80) {
+            ptr.aksi = 'rute';
+            rutaDraw = [{ x: kapal.x, y: kapal.y }];
+        } else {
+            ptr.aksi = 'pan';
+        }
+    }
+});
+
+canvas.addEventListener('pointermove', e => {
+    if (!ptr) return;
+    e.preventDefault();
+    const p = posisiPointer(e);
+    const dx = p.x - ptr.lx, dy = p.y - ptr.ly;
+    if (Math.hypot(p.x - ptr.sx, p.y - ptr.sy) > 6) ptr.moved = true;
+
+    if (ptr.aksi === 'rute' && rutaDraw) {
+        const wx = dariSX(p.x), wy = dariSY(p.y);
+        const last = rutaDraw[rutaDraw.length - 1];
+        if (Math.hypot(wx - last.x, wy - last.y) > 6 / kamera.skala) rutaDraw.push({ x: wx, y: wy });
+    } else if (ptr.aksi === 'pan') {
+        kamera.x -= dx / kamera.skala;
+        kamera.y -= dy / kamera.skala;
+    }
+    ptr.lx = p.x; ptr.ly = p.y;
+});
+
+canvas.addEventListener('pointerup', e => {
+    if (!ptr) return;
+    const p = posisiPointer(e);
+
+    if (ptr.aksi === 'bilah' && !ptr.moved) {
+        aksiBilah(ptr.target);
+    } else if (ptr.aksi === 'grid' && !ptr.moved) {
+        const q = layarKeKisi(p.x, p.y);
+        aksiGrid(q.i, q.j);
+    } else if (ptr.aksi === 'build' && !ptr.moved) {
+        masukBangun();
+    } else if (ptr.aksi === 'rute') {
+        if (ptr.moved) selesaikanRute();
+        else kapal.rute = null;       // ketuk tanpa seret: batalkan rute
+        rutaDraw = null;
+    }
+    ptr = null;
+});
+
+canvas.addEventListener('pointercancel', () => { ptr = null; rutaDraw = null; });
+
+// ==========================================
+// 11. GAMBAR
+// ==========================================
+function gambarKisi() {
+    const s = C * kamera.skala;
+    if (s < 4) return;
+    const ox = modp(toSX(0), s), oy = modp(toSY(0), s);
+    ctx.strokeStyle = 'rgba(120,130,160,0.08)';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    for (let x = ox; x < canvas.width; x += s) { ctx.moveTo(x + 0.5, 0); ctx.lineTo(x + 0.5, canvas.height); }
+    for (let y = oy; y < canvas.height; y += s) { ctx.moveTo(0, y + 0.5); ctx.lineTo(canvas.width, y + 0.5); }
+    ctx.stroke();
+}
+
+function gambarApi(t) {
+    const img = gbr.efek;
+    if (!img.complete || !img.naturalWidth) return;
+    const nx = -t.fx, ny = -t.fy;                     // arah api keluar dari moncong
+    const ofs = t.tipe === 'utama' ? 24 : 8;
+    const x = t.rx + nx * ofs, y = t.ry + ny * ofs;
+    const w = img.naturalWidth * SKALA_API;
+    const hPenuh = img.naturalHeight * SKALA_API;
+    ctx.save();
+    ctx.translate(x, y);
+    ctx.rotate(phi(nx, ny));
+    ctx.globalAlpha = 0.9;
+    // Tampilkan bagian atas api sesuai daya
+    ctx.drawImage(img, 0, 0, img.naturalWidth, img.naturalHeight * t.daya, -w / 2, 0, w, hPenuh * t.daya);
+    ctx.restore();
+}
+
+function gambarKapal() {
+    const sx = toSX(kapal.x), sy = toSY(kapal.y);
+    ctx.save();
+    ctx.translate(sx, sy);
+    ctx.scale(kamera.skala, kamera.skala);
+    ctx.rotate(kapal.th);
+
+    if (gbr.rangka.complete) ctx.drawImage(gbr.rangka, -PX, -PY);
+
+    const im = kapal.hidup ? gbr.intiHidup : gbr.intiMati;
+    if (im.complete) ctx.drawImage(im, INTI.x - PX, INTI.y - PY);
+
+    if (gbr.sel.complete) {
+        for (const c of kapal.cells.values()) {
+            if (c.tipe === 'sel') ctx.drawImage(gbr.sel, c.i * C - PX, c.j * C - PY, C, C);
+        }
+    }
+
+    for (const t of kapal.thr) {
+        if (t.tipe === 'utama') {
+            if (gbr.utama.complete) ctx.drawImage(gbr.utama, t.i * C - PX, t.j * C - PY, 32, 48);
+        } else {
+            ctx.save();
+            ctx.translate(t.rx, t.ry);
+            ctx.rotate(phi(-t.fx, -t.fy));
+            if (gbr.kecil.complete) ctx.drawImage(gbr.kecil, -8, -8, 16, 16);
+            ctx.restore();
+        }
+    }
+
+    for (const t of kapal.thr) if (t.daya > 0.01) gambarApi(t);
+
+    // Area bangun, hanya saat mode bangun
+    if (mode === 'bangun') {
+        ctx.strokeStyle = 'rgba(253,224,71,0.5)';
+        ctx.setLineDash([4, 3]);
+        ctx.lineWidth = 1 / kamera.skala;
+        ctx.strokeRect(BATAS_I[0] * C - PX, BATAS_J[0] * C - PY,
+            (BATAS_I[1] + 1 - BATAS_I[0]) * C, (BATAS_J[1] + 1 - BATAS_J[0]) * C);
+        ctx.setLineDash([]);
+    }
+    ctx.restore();
+}
+
+function gambarRute(pts) {
+    if (!pts || !pts.length) return;
+    ctx.save();
+    ctx.setLineDash([8, 6]);
+    ctx.strokeStyle = 'rgba(253,224,71,0.9)';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    pts.forEach((p, k) => {
+        const x = toSX(p.x), y = toSY(p.y);
+        if (k === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+    });
+    ctx.stroke();
+    ctx.setLineDash([]);
+    const u = pts[pts.length - 1];
+    ctx.beginPath();
+    ctx.arc(toSX(u.x), toSY(u.y), 6, 0, Math.PI * 2);
+    ctx.fillStyle = 'rgba(253,224,71,0.9)';
+    ctx.fill();
+    ctx.restore();
+}
+
+function gambarTombol(b, aktif) {
+    ctx.fillStyle = aktif ? 'rgba(253,224,71,0.35)' : 'rgba(0,0,0,0.7)';
+    ctx.strokeStyle = '#fde68a';
+    ctx.lineWidth = 2;
+    ctx.fillRect(b.x, b.y, b.w, b.h);
+    ctx.strokeRect(b.x, b.y, b.w, b.h);
+    ctx.fillStyle = '#fde68a';
+    ctx.font = '11px monospace';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(b.label, b.x + b.w / 2, b.y + b.h / 2);
+}
+
+function gambarUI() {
+    const k = kapal;
+    ctx.save();
+    ctx.fillStyle = '#fde68a';
+    ctx.font = '12px monospace';
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'top';
+    const baris = [
+        `Mode: ${mode === 'bangun' ? 'BANGUN' : 'UJI'}`,
+        `Sambung: ${k.tersambung}/${k.cells.size}`,
+        `Kecepatan: ${Math.hypot(k.vx, k.vy).toFixed(1)} px/s`,
+        `Heading: ${((k.th * 180 / Math.PI + 360) % 360).toFixed(0)}°`
+    ];
+    baris.forEach((t, i) => ctx.fillText(t, 10, 10 + i * 16));
+    ctx.restore();
+
+    if (mode === 'bangun') {
+        for (const b of tombolBilah()) gambarTombol(b, pilihan === b.id);
+    } else {
+        gambarTombol(tombolBuild(), false);
+    }
+}
+
+function gambar() {
+    ctx.fillStyle = '#07080d';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    gambarKisi();
+    if (!kapal) return;
+    gambarKapal();
+    if (rutaDraw) gambarRute(rutaDraw);
+    if (kapal.rute) gambarRute([{ x: kapal.x, y: kapal.y }, ...kapal.rute.pts]);
+    gambarUI();
+}
+
+// ==========================================
+// 12. LOOP
+// ==========================================
+let terakhir = performance.now();
+
+function loop(now) {
+    let dt = (now - terakhir) / 1000;
+    terakhir = now;
+    if (dt > 0.05) dt = 0.05;
+
+    if (kapal) {
+        hitungKoneksi();
+        hitungMoment();
+        if (mode === 'uji') kendali();
+        integrasi(dt);
+    }
+    gambar();
+    requestAnimationFrame(loop);
+}
+
+// Mulai setelah gambar kerangka siap
+function mulai() {
+    if (!gbr.rangka.complete || gbr.rangka.naturalWidth === 0) {
+        setTimeout(mulai, 100);
+        return;
+    }
+    rangkaCells = bacaMask();
+    kapal = buatKapalBaru();
+    requestAnimationFrame(loop);
+}
+mulai();
+</script>
+</body>
+</html>
