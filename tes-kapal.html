@@ -69,27 +69,27 @@ const F_THR = 6.4e6;            // N per pendorong utama (acuan)
 const ACEL_MAKS = 20;           // m/s², batas tubuh awak
 const SPOOL = 2;                // detik, daya naik dari 0 ke penuh
 const VMAX = 200;               // px/s = m/s
-const REM = 40;                 // m/s², perlambatan (dipakai juga untuk berhenti bertahap)
+const REM = 40;                 // m/s², perlambatan
 
-// Zona titik dan toleransi berhenti
-const ZONA_TITIK = 240;         // px, zona titik jalur (tak terlihat)
-const ARRIVE_POS = 16;          // px, jarak bayangan akhir untuk dianggap sampai
+// Berhenti di bayangan
+const ARRIVE_POS = 16;          // px
 const ARRIVE_TH = 0.17;         // rad (sekitar 10 derajat)
-const ARRIVE_V = 2;             // px/s, kecepatan maksimum saat dianggap sampai
+const ARRIVE_V = 2;             // px/s
 
-// Belok: hanya untuk tikungan nyata
+// Belok
 const AMBANG_BELOK = 0.3;       // rad (sekitar 17 derajat), selisih di bawah ini diabaikan
 const TIKUNGAN_MAKS = 400;      // px, jarak tikungan yang diperhitungkan
 const OMEGA_REF = 0.4;          // rad/s, laju putar acuan kruiser
 const PENDORONG_REF = 5;
 const SEL_REF = 232;
 const BELOK_MIN = 0.3;
-const BLEND_JARAK = 160;        // px, arah akhir mulai ikut memengaruhi saat dekat
+const BLEND_JARAK = 160;        // px, arah bayangan mulai ikut memengaruhi saat dekat
 
-// Jalur
-const LOOK_JARAK = 300;         // px, titik pandang di depan kapal sepanjang rute
+// Rute
+const LOOK_JARAK = 300;         // px, titik kemudi di depan kapal sepanjang rute asli
+const TOL_SIMPLIF = 16;         // px, goyangan seretan di bawah ini dianggap lurus
+const SEG_WINDOW = 8;           // segmen yang dicari ke depan untuk posisi kapal di rute
 const JALUR_STEP = 6;           // px layar, jarak antar titik saat menggambar
-const SUSUL_DETIK = 0.5;        // detik, rute sisa menyusul posisi kapal
 
 // Koreksi bayangan saat dekat
 const KOREKSI_JARAK = 200;      // px
@@ -118,7 +118,8 @@ let errorTerakhir = null;
 let kapal = {
     x: 0, y: 0, th: 0, v: 0, nyala: 0,
     target: null,               // bayangan akhir: { x, y, th }, sama dengan titik terakhir rute
-    rute: [],                   // titik rute: { x, y }, titik terakhir = target
+    rute: [],                   // rute asli yang sudah disederhanakan, TIDAK pernah diubah setelah dikunci
+    seg: 0,                     // indeks segmen rute tempat kapal berada (hanya maju)
     hidup: false, status: '-', tersambung: 0, gas: false
 };
 
@@ -304,16 +305,49 @@ function hitungKoneksi() {
 }
 
 // ==========================================
-// 7. RUTE (jalur)
+// 7. RUTE
 // ==========================================
-// Rute disimpan sebagai titik dunia. Titik terakhir adalah bayangan akhir dan tidak pernah bergeser.
-// Titik lain ikut bergeser ke posisi kapal saat kapal keluar dari garis, sehingga bentuk jalur tetap.
+// Rute asli disimpan sekali saat dikunci, lalu tidak pernah diubah.
+// Kapal hanya membaca rute ini dan menyimpan indeks segmen tempatnya berada.
 
-function proyeksiKeRute() {
+// Jarak titik p ke segmen a-b
+function jarakKeSegmen(p, a, b) {
+    const dx = b.x - a.x, dy = b.y - a.y;
+    const L2 = dx * dx + dy * dy;
+    let t = L2 > 0 ? ((p.x - a.x) * dx + (p.y - a.y) * dy) / L2 : 0;
+    t = clamp(t, 0, 1);
+    return Math.hypot(p.x - (a.x + dx * t), p.y - (a.y + dy * t));
+}
+
+// Penyederhanaan: titik yang masih berada dalam TOL_SIMPLIF dari garis lurus dibuang.
+// Titik sudut yang benar-benar membelok tetap disimpan.
+function sederhanakan(pts) {
+    if (pts.length <= 2) return pts.map(p => ({ x: p.x, y: p.y }));
+    const out = [{ x: pts[0].x, y: pts[0].y }];
+    let anchor = 0;
+    for (let k = 2; k < pts.length; k++) {
+        let ok = true;
+        for (let m = anchor + 1; m < k; m++) {
+            if (jarakKeSegmen(pts[m], pts[anchor], pts[k]) > TOL_SIMPLIF) { ok = false; break; }
+        }
+        if (!ok) {
+            anchor = k - 1;
+            out.push({ x: pts[anchor].x, y: pts[anchor].y });
+        }
+    }
+    const last = pts[pts.length - 1];
+    out.push({ x: last.x, y: last.y });
+    return out;
+}
+
+// Posisi kapal pada rute: titik terdekat di segmen fromSeg sampai fromSeg + SEG_WINDOW.
+// Fungsi ini tidak mengubah state, jadi aman dipakai saat menggambar.
+function proyeksiDariSeg(fromSeg) {
     const r = kapal.rute;
     if (r.length < 2) return null;
     let best = null;
-    for (let i = 0; i < r.length - 1; i++) {
+    const hi = Math.min(r.length - 2, fromSeg + SEG_WINDOW);
+    for (let i = fromSeg; i <= hi; i++) {
         const a = r[i], b = r[i + 1];
         const dx = b.x - a.x, dy = b.y - a.y;
         const L2 = dx * dx + dy * dy;
@@ -326,98 +360,65 @@ function proyeksiKeRute() {
     return best;
 }
 
-function arcDariProyeksi(p) {
+// Dipanggil sekali per frame di logika. Indeks segmen hanya boleh maju.
+function updateSeg() {
+    const p = proyeksiDariSeg(kapal.seg);
+    if (p) kapal.seg = p.seg;
+    return p;
+}
+
+// Bagian rute yang tampil: dari posisi proyeksi kapal sampai bayangan, rute asli tidak berubah
+function sisaRuteDepan() {
     const r = kapal.rute;
-    const arcs = new Array(r.length).fill(0);
-    let prev = { x: p.x, y: p.y }, acc = 0;
-    for (let i = p.seg + 1; i < r.length; i++) {
-        acc += dist(prev, r[i]);
-        arcs[i] = acc;
-        prev = r[i];
-    }
-    return { arcs, total: acc };
+    if (r.length < 2) return [];
+    const p = proyeksiDariSeg(kapal.seg);
+    if (!p) return [];
+    return [{ x: p.x, y: p.y }, ...r.slice(p.seg + 1)];
 }
 
-// Titik rute yang sudah dilewati dibuang dari depan
-function trimRute() {
-    const k = kapal;
-    while (k.rute.length > 2) {
-        const p = proyeksiKeRute();
-        if (!p) break;
-        const r0 = k.rute[0];
-        const d = dist(k, r0);
-        const fx = Math.sin(k.th), fy = -Math.cos(k.th);
-        const depan = (r0.x - k.x) * fx + (r0.y - k.y) * fy;
-        if (p.seg >= 1 || (depan < 0 && d < ZONA_TITIK)) k.rute.shift();
-        else break;
-    }
-}
-
-// Rute sisa menyusul kapal: titik-titik rute digeser ke arah kapal secara bertahap.
-// Bentuk rute tetap. Titik akhir (bayangan) tidak ikut bergeser.
-function koreksiRute(dt) {
-    const k = kapal;
-    const r = k.rute;
-    if (r.length < 2) return;
-    const p = proyeksiKeRute();
-    if (!p) return;
-    const ex = k.x - p.x, ey = k.y - p.y;
-    if (Math.hypot(ex, ey) < 1) return;
-    const { arcs, total } = arcDariProyeksi(p);
-    if (total < 1) return;
-    const frac = Math.min(1, dt / SUSUL_DETIK);
-    for (let i = p.seg + 1; i < r.length - 1; i++) {
-        const w = clamp(1 - arcs[i] / total, 0, 1);
-        r[i].x += ex * frac * w;
-        r[i].y += ey * frac * w;
-    }
-}
-
-function jalurDepan() {
-    return [{ x: kapal.x, y: kapal.y }, ...kapal.rute];
-}
-
-function sisaJalur() {
-    const pts = jalurDepan();
-    let s = 0;
-    for (let i = 1; i < pts.length; i++) s += dist(pts[i - 1], pts[i]);
+// Panjang sisa rute dari proyeksi kapal sampai bayangan
+function sisaRute(p) {
+    const r = kapal.rute;
+    let s = dist(p, r[p.seg + 1]);
+    for (let i = p.seg + 1; i < r.length - 1; i++) s += dist(r[i], r[i + 1]);
     return s;
 }
 
-function titikPandang() {
-    const pts = jalurDepan();
-    let acc = 0;
-    for (let i = 1; i < pts.length; i++) {
-        const seg = dist(pts[i - 1], pts[i]);
-        if (seg > 0 && acc + seg >= LOOK_JARAK) {
-            const t = (LOOK_JARAK - acc) / seg;
-            return { x: pts[i - 1].x + (pts[i].x - pts[i - 1].x) * t, y: pts[i - 1].y + (pts[i].y - pts[i - 1].y) * t };
+// Titik kemudi: berjarak jarak dari proyeksi kapal sepanjang rute asli
+function titikDepan(p, jarak) {
+    const r = kapal.rute;
+    let prev = { x: p.x, y: p.y }, acc = 0;
+    for (let i = p.seg + 1; i < r.length; i++) {
+        const seg = dist(prev, r[i]);
+        if (seg > 0 && acc + seg >= jarak) {
+            const t = (jarak - acc) / seg;
+            return { x: prev.x + (r[i].x - prev.x) * t, y: prev.y + (r[i].y - prev.y) * t };
         }
         acc += seg;
+        prev = r[i];
     }
-    return pts[pts.length - 1];
+    return r[r.length - 1];
 }
 
-// Tikungan nyata di depan: dihitung dari segmen rute saja, hanya di atas ambang
+// Tikungan nyata di depan, dihitung dari rute asli saja
 function cariTikungan(p) {
-    if (!p) return null;
     const r = kapal.rute;
-    const { arcs } = arcDariProyeksi(p);
-    const dariKapal = dist(kapal, p);
-    for (let i = p.seg + 1; i <= r.length - 2; i++) {
-        const arc = dariKapal + arcs[i];
+    let arc = dist(p, r[p.seg + 1]);
+    for (let idx = p.seg + 1; idx <= r.length - 2; idx++) {
         if (arc > TIKUNGAN_MAKS) break;
-        if (dist(r[i], r[i - 1]) < 1 || dist(r[i + 1], r[i]) < 1) continue;
-        const masuk = arahKe(r[i].x - r[i - 1].x, r[i].y - r[i - 1].y);
-        const keluar = arahKe(r[i + 1].x - r[i].x, r[i + 1].y - r[i].y);
-        const beda = sudutSelisih(keluar, masuk);
-        if (Math.abs(beda) > AMBANG_BELOK) return { arc, sudut: beda, out: keluar };
+        if (dist(r[idx - 1], r[idx]) >= 1 && dist(r[idx], r[idx + 1]) >= 1) {
+            const masuk = arahKe(r[idx].x - r[idx - 1].x, r[idx].y - r[idx - 1].y);
+            const keluar = arahKe(r[idx + 1].x - r[idx].x, r[idx + 1].y - r[idx].y);
+            const beda = sudutSelisih(keluar, masuk);
+            if (Math.abs(beda) > AMBANG_BELOK) return { arc, sudut: beda, out: keluar };
+        }
+        arc += dist(r[idx], r[idx + 1]);
     }
     return null;
 }
 
 function previewList() {
-    if (ptr && ptr.aksi === 'sambung') return [...kapal.rute, ...draftPts.slice(1)];
+    if (ptr && ptr.aksi === 'sambung') return [...sisaRuteDepan(), ...draftPts.slice(1)];
     return draftPts;
 }
 
@@ -425,20 +426,22 @@ function sedangGambar() {
     return ptr && ptr.moved && (ptr.aksi === 'kapal' || ptr.aksi === 'sambung') && draftPts.length > 0;
 }
 
-// Rute baru dikunci saat jari dilepas. Titik terakhir menjadi bayangan akhir.
+// Rute dikunci saat jari dilepas: disederhanakan, lalu menjadi rute asli.
 function kunciJalur() {
-    const list = previewList();
+    let list = sederhanakan(previewList());
     if (list.length < 2) return;
     const last = list[list.length - 1];
     const prev = list[list.length - 2];
     last.th = arahKe(last.x - prev.x, last.y - prev.y);
     kapal.rute = list;
+    kapal.seg = 0;
     kapal.target = last;
 }
 
 function resetGerak() {
     kapal.target = null;
     kapal.rute = [];
+    kapal.seg = 0;
     kapal.v = 0;
     kapal.nyala = 0;
     kapal.status = 'diam';
@@ -473,14 +476,15 @@ function kendali(dt) {
         return;
     }
 
-    trimRute();
-
     const end = k.target;
     const dEnd = dist(k, end);
-    const sisa = sisaJalur();
-    const ikutiJalur = k.rute.length >= 2 && sisa > LOOK_JARAK;
     const om = omegaMaks(aktif);
 
+    const proj = updateSeg();
+    const sisa = proj ? sisaRute(proj) : 0;
+    const ikutiJalur = !!proj && sisa > LOOK_JARAK;
+
+    // Dekat bayangan: koreksi arah lembut, lalu berhenti hanya kalau posisi, arah, dan kecepatan sudah cocok
     if (!ikutiJalur) {
         if (dEnd < KOREKSI_JARAK && Math.abs(sudutSelisih(end.th, k.th)) < KOREKSI_SUDUT) {
             end.th -= sudutSelisih(end.th, k.th) * Math.min(1, dt * 2);
@@ -491,20 +495,23 @@ function kendali(dt) {
         }
     }
 
-    const proj = ikutiJalur ? proyeksiKeRute() : null;
-    const tk = ikutiJalur ? cariTikungan(proj) : null;
-    let hd;
-    if (!ikutiJalur) {
+    // Arah kemudi
+    let hd, tk = null;
+    if (ikutiJalur) {
+        tk = cariTikungan(proj);
+        if (tk && tk.arc <= LOOK_JARAK) {
+            hd = tk.out;
+        } else {
+            const tp = titikDepan(proj, LOOK_JARAK);
+            hd = arahKe(tp.x - k.x, tp.y - k.y);
+        }
+    } else {
         const hdPos = arahKe(end.x - k.x, end.y - k.y);
         const w = clamp(1 - dEnd / BLEND_JARAK, 0, 1);
         hd = hdPos + sudutSelisih(end.th, hdPos) * w;
-    } else if (tk && tk.arc <= LOOK_JARAK) {
-        hd = tk.out;
-    } else {
-        const tp = titikPandang();
-        hd = arahKe(tp.x - k.x, tp.y - k.y);
     }
 
+    // Selisih kecil diabaikan di jalur lurus. Belok hanya untuk tikungan nyata atau selisih besar.
     const err = sudutSelisih(hd, k.th);
     const wajibBelok = !ikutiJalur || (tk && tk.arc <= LOOK_JARAK) || Math.abs(err) > AMBANG_BELOK;
     if (wajibBelok) {
@@ -513,10 +520,12 @@ function kendali(dt) {
         k.th += clamp(err, -maks, maks);
     }
 
+    // Daya naik halus
     k.nyala += dt;
     const s = clamp(k.nyala / SPOOL, 0, 1);
     const daya = s * s * (3 - 2 * s);
 
+    // Batas kecepatan: pengereman ke bayangan, tikungan nyata, dan sudut hadap
     const jarakRem = ikutiJalur ? sisa : dEnd;
     let vTarget = Math.min(VMAX, Math.sqrt(2 * REM * Math.max(0, jarakRem)));
     if (tk) {
@@ -536,10 +545,9 @@ function kendali(dt) {
     k.gas = k.v > 0.5;
     k.status = (ikutiJalur && Math.abs(err) > AMBANG_BELOK) ? 'belok' : 'maju';
 
+    // Kapal hanya maju, tidak pernah mundur
     k.x += Math.sin(k.th) * k.v * dt;
     k.y += -Math.cos(k.th) * k.v * dt;
-
-    koreksiRute(dt);
 }
 
 // ==========================================
@@ -625,12 +633,14 @@ canvas.addEventListener('pointerdown', aman('pointerdown', e => {
 
     if (dalam(p, tombolBuild())) { ptr.aksi = 'build'; return; }
 
+    // Titik akhir rute: seret untuk meneruskan rute
     if (kapal.target && Math.hypot(p.x - toSX(kapal.target.x), p.y - toSY(kapal.target.y)) < UJUNG_SENTUH) {
         ptr.aksi = 'sambung';
         draftPts = [{ x: kapal.target.x, y: kapal.target.y }];
         return;
     }
 
+    // Ketuk atau tahan kapal: mulai gambar rute baru
     if (Math.hypot(p.x - toSX(kapal.x), p.y - toSY(kapal.y)) < RADIUS_SENTUH_KAPAL) {
         ptr.aksi = 'kapal';
         draftPts = [];
@@ -791,9 +801,9 @@ function gambarKapal() {
     gambarKapalPada(kapal.x, kapal.y, kapal.th, 1, mode === 'bangun');
 }
 
-// Garis rute putus-putus tanpa panah
+// Garis putus-putus dari kapal melewati daftar titik (tanpa panah)
 function gambarGaris(list, warna) {
-    if (!list.length) return;
+    if (list.length < 1) return;
     ctx.save();
     ctx.setLineDash([8, 6]);
     ctx.strokeStyle = warna;
@@ -814,8 +824,8 @@ function gambarJalur() {
         return;
     }
 
-    if (kapal.target && kapal.rute.length) {
-        gambarGaris(kapal.rute, 'rgba(253,224,71,0.9)');
+    if (kapal.target && kapal.rute.length >= 2) {
+        gambarGaris(sisaRuteDepan(), 'rgba(253,224,71,0.9)');
     }
 }
 
