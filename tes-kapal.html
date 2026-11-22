@@ -65,10 +65,10 @@ const SPOOL = 2;
 const VMAX = 200;
 const REM = 40;
 
-// --- PERBAIKAN BUG 1: Toleransi berhenti dilebarkan ---
-const ARRIVE_POS = 32;          // px (sebelumnya 16)
-const ARRIVE_TH = 0.3;          // rad (sebelumnya 0.17, dibesarkan agar mudah berhenti)
-const ARRIVE_V = 2;
+// Toleransi berhenti
+const ARRIVE_POS = 40;          // Radius (px) untuk mode "Hard Stop"
+const ARRIVE_TH = 0.3;          // Toleransi sudut (rad)
+const ARRIVE_V = 2;             // Kecepatan minimum untuk dinyatakan berhenti
 
 const AMBANG_BELOK = 0.3;
 const TIKUNGAN_MAKS = 400;
@@ -393,7 +393,6 @@ function sedangGambar() {
     return ptr && ptr.moved && (ptr.aksi === 'kapal' || ptr.aksi === 'sambung') && draftPts.length > 0;
 }
 
-// --- PERBAIKAN BUG 4: DEEP COPY SAAT KUNCI JALUR ---
 function kunciJalur() {
     let list = sederhanakan(previewList());
     if (list.length < 2) return;
@@ -402,7 +401,6 @@ function kunciJalur() {
     last.th = arahKe(last.x - prev.x, last.y - prev.y);
     kapal.rute = list;
     kapal.seg = 0;
-    // Deep copy agar objek target tidak memodifikasi array rute
     kapal.target = { x: last.x, y: last.y, th: last.th };
 }
 
@@ -438,19 +436,36 @@ function kendali(dt) {
     const sisa = proj ? sisaRute(proj) : 0;
     const ikutiJalur = !!proj && sisa > LOOK_JARAK;
 
-    // --- PERBAIKAN BUG 2: Hapus pemutaran end.th ---
-    // Cek kondisi berhenti
-    if (!ikutiJalur) {
-        if (dEnd <= ARRIVE_POS && k.v < ARRIVE_V && Math.abs(sudutSelisih(end.th, k.th)) <= ARRIVE_TH) {
+    // ====================================================
+    // PERBAIKAN UTAMA: HARD STOP ZONE (Zona Berhenti Paksa)
+    // ====================================================
+    if (!ikutiJalur && dEnd <= ARRIVE_POS) {
+        // 1. Paksa melambat drastis (rem 2x lebih kuat)
+        k.v = Math.max(0, k.v - REM * 2 * dt);
+        
+        // 2. Hadapkan kapal ke arah bayangan
+        const err = sudutSelisih(end.th, k.th);
+        if (Math.abs(err) > ARRIVE_TH) {
+            const maks = om * dt;
+            k.th += clamp(err, -maks, maks);
+            k.status = 'memutar';
+        } else if (k.v < ARRIVE_V) {
+            // 3. Jika kecepatan sudah sangat lambat DAN arah sudah pas, berhenti total
             resetGerak();
             return;
         }
+
+        // 4. Tetap meluncur sedikit (karena sisa kecepatan)
+        k.x += Math.sin(k.th) * k.v * dt;
+        k.y += -Math.cos(k.th) * k.v * dt;
+        
+        return; // Keluar dari fungsi, jangan hitung akselerasi mesin lagi
     }
+    // ====================================================
 
     let hd, tk = null;
     if (ikutiJalur) {
         tk = cariTikungan(proj);
-        // --- PERBAIKAN BUG 3: Hanya aim tikungan jika sudah dekat ---
         if (tk && tk.arc <= 60) { 
             hd = tk.out;
         } else {
@@ -478,7 +493,6 @@ function kendali(dt) {
     const jarakRem = ikutiJalur ? sisa : dEnd;
     let vTarget = Math.min(VMAX, Math.sqrt(2 * REM * Math.max(0, jarakRem)));
     
-    // --- PERBAIKAN BUG 1: Paksa pengereman ekstra saat mendekat ---
     if (!ikutiJalur && dEnd < KOREKSI_JARAK) {
         vTarget = Math.min(vTarget, dEnd * 1.2); 
     }
