@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-<title>Tes Kapal - Tahap 2</title>
+<title>Tes Kapal - Tahap 2b</title>
 <style>
 body,html{margin:0;padding:0;width:100%;height:100%;overflow:hidden;background:#07080d;font-family:monospace}
 canvas{display:block;touch-action:none}
@@ -67,24 +67,18 @@ const KG_PER_SEL = 1000;
 const F_THR = 6.4e6;
 const ACEL_MAKS = 20;           // m/s², batas tubuh awak
 const SPOOL = 2;                // detik, daya naik dari 0 ke penuh
-const VMAX = 200;               // px/s
-const REM = 40;                 // m/s², perlambatan
+const REM = 40;                 // m/s², perlambatan (dipakai juga untuk pengereman ke bayangan)
 
 // Kesan berat
-const LAJU_BELOK = 0.05;        // rad/s, laju putar tetap kapal besar
-const KECEPATAN_BELOK = 12;     // px/s, kecepatan maju saat belok
-const KECEPATAN_AWAL = 3;       // px/s, kecepatan maju pelan saat belum menghadap
-const AMBANG_BELOK = 0.3;       // rad, selisih di atas ini dianggap belum menghadap
+const LAJU_BELOK = 0.05;        // rad/s
+const KECEPATAN_BELOK = 12;     // px/s
+const KECEPATAN_AWAL = 8;       // px/s, kecepatan saat belum menghadap (tidak lagi 3)
+const AMBANG_BELOK = 0.3;       // rad
 
-// Pita jalur (Tahap 2)
-const LEBAR_PITA = 640;         // px, lebar pita (40 sel)
-const PITA_ALPHA = 0.22;        // transparansi pita
-const KOREKSI_TEPI = 0.5;       // bagian lebar pita di tepi tempat koreksi mulai aktif (0..1 dari setengah lebar)
-
-// Berhenti di bayangan
-const ARRIVE_POS = 16;          // px
-const ARRIVE_TH = 0.17;         // rad (sekitar 10 derajat)
-const ARRIVE_V = 2;             // px/s
+// Pita jalur
+const LEBAR_PITA = 640;         // px
+const PITA_ALPHA = 0.22;
+const KOREKSI_TEPI = 0.5;
 
 // Rute
 const LOOK_JARAK = 300;         // px, titik kemudi di depan kapal
@@ -113,11 +107,11 @@ let errorTerakhir = null;
 
 let kapal = {
     x: 0, y: 0, th: 0, v: 0, nyala: 0,
-    target: null,
-    rute: [],
+    target: null,               // bayangan akhir: { x, y, th }
+    rute: [],                   // rute asli, tidak diubah setelah dikunci
     seg: 0,
     hidup: false, status: '-', tersambung: 0, gas: false,
-    koreksi: 0                  // besar koreksi arah dari tepi pita (rad), untuk tampilan status
+    koreksi: 0
 };
 
 // ==========================================
@@ -174,7 +168,6 @@ function anchorFor(id, i, j) {
     const d = DEF[id];
     return { i: i - Math.floor(d.w / 2), j: j - Math.floor(d.h / 2) };
 }
-// Arah dunia dari selisih posisi: maju = (sin th, -cos th)
 function arahKe(dx, dy) { return Math.atan2(dx, -dy); }
 
 // ==========================================
@@ -296,8 +289,6 @@ function hitungKoneksi() {
 // ==========================================
 // 7. RUTE DAN PITA
 // ==========================================
-// Rute asli disimpan saat dikunci dan tidak diubah. Bayangan akhir disalin.
-// Pita selebar LEBAR_PITA mengelilingi rute. Selama kapal di dalam pita, tidak ada koreksi.
 function jarakKeSegmen(p, a, b) {
     const dx = b.x - a.x, dy = b.y - a.y;
     const L2 = dx * dx + dy * dy;
@@ -364,14 +355,12 @@ function sisaRute(p) {
     return s;
 }
 
-// Jarak tegak lurus kapal ke garis tengah rute di segmen proyeksi (positif = kiri, negatif = kanan)
 function simpanganDariRute(p) {
     const r = kapal.rute;
     const a = r[p.seg], b = r[p.seg + 1];
     const dx = b.x - a.x, dy = b.y - a.y;
     const L = Math.hypot(dx, dy);
     if (L < 1) return 0;
-    // normal kiri dari arah rute (dalam koordinat dunia: maju = (sin th, -cos th))
     const nx = -dy / L, ny = dx / L;
     return (kapal.x - p.x) * nx + (kapal.y - p.y) * ny;
 }
@@ -427,6 +416,9 @@ function resetGerak() {
 function massaKapal() { return Math.max(1, cells.size) * KG_PER_SEL; }
 function accelMaks(aktif) { return Math.min(aktif * F_THR / massaKapal(), ACEL_MAKS); }
 
+// Titik pengereman: jarak henti dari bayangan, dihitung mundur sepanjang rute
+function jarakHenti(v) { return (v * v) / (2 * REM); }
+
 function kendali(dt) {
     const k = kapal;
     k.gas = false;
@@ -436,20 +428,30 @@ function kendali(dt) {
     if (!k.target) { k.v = 0; k.nyala = 0; k.status = 'diam'; k.koreksi = 0; return; }
 
     const end = k.target;
-    const dEnd = dist(k, end);
-
     const proj = updateSeg();
     const sisa = proj ? sisaRute(proj) : 0;
     const ikutiJalur = !!proj && sisa > LOOK_JARAK;
 
-    // Berhenti di bayangan: posisi, arah, dan kecepatan harus cocok
-    if (!ikutiJalur && dEnd <= ARRIVE_POS && k.v < ARRIVE_V &&
-        Math.abs(sudutSelisih(end.th, k.th)) <= ARRIVE_TH) {
+    // Sisa jarak ke bayangan (sepanjang rute bila masih ada rute, atau garis lurus bila tidak)
+    const sisaJarak = proj ? sisa : dist(k, end);
+
+    // Sudah di area pengereman: rem sampai kecepatan 0, lalu dianggap sampai
+    if (k.v <= 0.01 && !ikutiJalur) {
         resetGerak();
         return;
     }
+    const masukRem = !ikutiJalur || sisaJarak <= jarakHenti(k.v);
+    if (masukRem && !ikutiJalur) {
+        k.v = Math.max(0, k.v - REM * dt);
+        k.status = 'rem';
+        k.x += Math.sin(k.th) * k.v * dt;
+        k.y += -Math.cos(k.th) * k.v * dt;
+        k.koreksi = 0;
+        if (k.v <= 0.01) { resetGerak(); }
+        return;
+    }
 
-    // Arah kemudi: mengikuti titik depan pada garis tengah. Di dalam pita tidak ada koreksi tambahan.
+    // Arah kemudi: titik depan pada rute, atau bayangan bila rute tinggal sedikit
     let hd;
     if (ikutiJalur) {
         const tp = titikDepan(proj, LOOK_JARAK);
@@ -458,7 +460,7 @@ function kendali(dt) {
         hd = arahKe(end.x - k.x, end.y - k.y);
     }
 
-    // Koreksi dari tepi pita: hanya aktif saat kapal mendekati tepi, besarnya sebanding jarak ke tepi
+    // Koreksi dari tepi pita (tanpa garis tengah)
     k.koreksi = 0;
     if (ikutiJalur) {
         const sim = simpanganDariRute(proj);
@@ -466,27 +468,22 @@ function kendali(dt) {
         const lewat = Math.abs(sim) - batasTepi;
         if (lewat > 0) {
             const porsi = clamp(lewat / ((LEBAR_PITA / 2) - batasTepi), 0, 1);
-            // Kalau kapal condong ke kiri (sim > 0), kemudikan ke kanan, dan sebaliknya
-            const arahKoreksi = sim > 0 ? -1 : 1;
-            k.koreksi = arahKoreksi * porsi;
+            k.koreksi = (sim > 0 ? -1 : 1) * porsi;
             hd += k.koreksi * AMBANG_BELOK;
         }
     }
 
     const err = sudutSelisih(hd, k.th);
 
-    // Daya naik halus
     k.nyala += dt;
     const s = clamp(k.nyala / SPOOL, 0, 1);
     const daya = s * s * (3 - 2 * s);
 
-    // Kecepatan: pelan saat belum menghadap, KECEPATAN_BELOK saat belok
     const belumMenghadap = Math.abs(err) > AMBANG_BELOK;
     let vTarget = belumMenghadap ? KECEPATAN_AWAL : KECEPATAN_BELOK;
 
-    if (!ikutiJalur) {
-        vTarget = Math.min(vTarget, Math.sqrt(2 * REM * Math.max(0, dEnd)));
-    }
+    // Batasi kecepatan agar masih bisa direm sampai bayangan
+    if (!ikutiJalur) vTarget = Math.min(vTarget, Math.sqrt(2 * REM * Math.max(0, sisaJarak)));
 
     if (k.v < vTarget) {
         k.v = Math.min(vTarget, k.v + accelMaks(aktif) * daya * dt);
@@ -495,7 +492,6 @@ function kendali(dt) {
     }
     k.v = Math.max(0, k.v);
 
-    // Laju putar tetap. Tidak ada putaran saat kecepatan nol.
     if (k.v > 0.5) {
         const maks = LAJU_BELOK * dt;
         k.th += clamp(err, -maks, maks);
@@ -699,7 +695,7 @@ function gambarKapalPada(x, y, th, alpha, overlay) {
 
 function gambarKapal() { gambarKapalPada(kapal.x, kapal.y, kapal.th, 1, mode === 'bangun'); }
 
-// Pita transparan selebar LEBAR_PITA mengikuti rute (kumpulan segmen tebal)
+// Pita polos transparan selebar LEBAR_PITA, tanpa garis tengah
 function gambarPita(list, warna) {
     if (list.length < 1) return;
     ctx.save();
@@ -715,33 +711,14 @@ function gambarPita(list, warna) {
     ctx.restore();
 }
 
-// Garis tengah putus-putus, tipis
-function gambarGaris(list, warna) {
-    if (list.length < 1) return;
-    ctx.save();
-    ctx.setLineDash([8, 6]);
-    ctx.strokeStyle = warna;
-    ctx.lineWidth = 2;
-    ctx.beginPath();
-    ctx.moveTo(toSX(kapal.x), toSY(kapal.y));
-    for (const p of list) ctx.lineTo(toSX(p.x), toSY(p.y));
-    ctx.stroke();
-    ctx.setLineDash([]);
-    ctx.restore();
-}
-
 function gambarJalur() {
     if (mode !== 'uji') return;
     if (sedangGambar()) {
-        const list = previewList();
-        gambarPita(list, 'rgba(147,197,253,1)');
-        gambarGaris(list, 'rgba(147,197,253,0.9)');
+        gambarPita(previewList(), 'rgba(147,197,253,1)');
         return;
     }
     if (kapal.target && kapal.rute.length >= 2) {
-        const list = sisaRuteDepan();
-        gambarPita(list, 'rgba(253,224,71,1)');
-        gambarGaris(list, 'rgba(253,224,71,0.9)');
+        gambarPita(sisaRuteDepan(), 'rgba(253,224,71,1)');
     }
 }
 
