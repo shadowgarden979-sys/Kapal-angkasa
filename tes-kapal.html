@@ -89,6 +89,9 @@ const FAKTOR_SUDUT = [
     { maks: Infinity, f: 0.45 }
 ];
 
+// Pendorong utama dan api
+const PENDORONG_LEBAR = 32;     // px, lebar pendorong (api disamakan dengan ini)
+
 // Pita jalur
 const LEBAR_PITA = 640;
 const PITA_ALPHA = 0.22;
@@ -737,7 +740,37 @@ function gambarKisi() {
     ctx.stroke();
 }
 
-function gambarKapalPada(x, y, th, alpha, overlay) {
+// Api pendorong: lebar disamakan dengan pendorong, panjang nyala berubah, berkedip, dan goyang
+function gambarApi(t, waktu) {
+    if (!siapGambar(gbr.efek)) return;
+    const img = gbr.efek;
+    const skalaTinggi = PENDORONG_LEBAR / img.naturalWidth;
+    const tinggiPenuh = img.naturalHeight * skalaTinggi;
+
+    // Panjang nyala berubah 60–100% dari gambar
+    const nyala = clamp(0.8 + 0.2 * Math.sin(waktu * 0.02 + t.i), 0.6, 1);
+    const tinggi = tinggiPenuh * nyala;
+
+    // Berkedip: alpha berayun dua frekuensi
+    const kedip = clamp(0.8 + 0.1 * Math.sin(waktu * 0.03) + 0.1 * Math.sin(waktu * 0.047 + t.j), 0.6, 1);
+
+    // Goyang kecil
+    const goyang = Math.sin(waktu * 0.015 + t.i * 0.5);
+    const rot = Math.sin(waktu * 0.02 + t.j) * (2 * Math.PI / 180);
+
+    const x = t.i * C - PX + PENDORONG_LEBAR / 2 + goyang;
+    const y = t.j * C - PY + 48;
+
+    ctx.save();
+    ctx.globalAlpha = 0.9 * kedip;
+    ctx.translate(x, y);
+    ctx.rotate(rot);
+    ctx.drawImage(img, 0, 0, img.naturalWidth, img.naturalHeight * nyala,
+                  -PENDORONG_LEBAR / 2, 0, PENDORONG_LEBAR, tinggi);
+    ctx.restore();
+}
+
+function gambarKapalPada(x, y, th, alpha, overlay, waktu = 0) {
     ctx.save();
     try {
         ctx.globalAlpha = alpha;
@@ -760,12 +793,10 @@ function gambarKapalPada(x, y, th, alpha, overlay) {
             for (const t of thrs) ctx.drawImage(gbr.utama, t.i * C - PX, t.j * C - PY, 32, 48);
         }
 
-        if (alpha === 1 && kapal.gas && siapGambar(gbr.efek)) {
-            const w = gbr.efek.naturalWidth * 0.25, h = gbr.efek.naturalHeight * 0.25;
-            ctx.globalAlpha = 0.9;
+        // Api hanya untuk kapal asli, saat ada dorongan
+        if (alpha === 1 && kapal.gas) {
             for (const t of thrs) {
-                if (!t.aktif) continue;
-                ctx.drawImage(gbr.efek, t.i * C - PX + 16 - w / 2, t.j * C - PY + 48, w, h);
+                if (t.aktif) gambarApi(t, waktu);
             }
         }
 
@@ -781,7 +812,7 @@ function gambarKapalPada(x, y, th, alpha, overlay) {
     } finally { ctx.restore(); }
 }
 
-function gambarKapal() { gambarKapalPada(kapal.x, kapal.y, kapal.th, 1, mode === 'bangun'); }
+function gambarKapal() { gambarKapalPada(kapal.x, kapal.y, kapal.th, 1, mode === 'bangun', performance.now()); }
 
 function gambarPita(list, warna) {
     if (list.length < 1) return;
