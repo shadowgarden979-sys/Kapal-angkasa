@@ -54,7 +54,9 @@ const SLOT = [
     { i: 19, j: 29, w: 2, h: 3 }
 ];
 
-const BATAS_I = [-2, COLS + 1], BATAS_J = [-2, ROWS + 1];
+// Batas bangun kruiser: 40×40 sel, berpusat di kerangka 24×33 sel
+// Kolom -8 sampai 31 (40 kolom), baris -4 sampai 35 (40 baris)
+const BATAS_I = [-8, 31], BATAS_J = [-4, 35];
 const DEF = { utama: { w: 2, h: 3 }, sel: { w: 1, h: 1 } };
 const TOMBOL = [['utama', 'Utama'], ['sel', 'Sel'], ['hapus', 'Hapus'], ['ok', 'OK']];
 const DIR4 = [[1, 0], [-1, 0], [0, 1], [0, -1]];
@@ -62,11 +64,17 @@ const DIR4 = [[1, 0], [-1, 0], [0, 1], [0, -1]];
 const SKALA_BANGUN = 0.6;
 const ZOOM_MIN = 0.2, ZOOM_MAX = 3, ZOOM_LANGKAH = 1.25;
 
-const VMAX = 200;
-const REM = 40;
-const PUTAR = 2;
-const ARRIVE = 4;
-const SEJAJAR = 0.2;
+// Gerak
+const VMAX = 200;               // px/s, kecepatan maju penuh
+const REM = 40;                 // px/s², perlambatan saat mengerem
+const ARRIVE = 4;               // px, jarak dianggap sampai
+const SEJAJAR = 0.2;            // (tidak dipakai lagi, disisakan agar konstanta lama tetap ada)
+
+// Gerak berbelok sambil maju (kalibrasi untuk kruiser)
+const OMEGA_REF = 0.4;          // rad/s, laju putar acuan (belok 180° ≈ 8 detik)
+const PENDORONG_REF = 5;        // jumlah pendorong utama acuan
+const SEL_REF = 232;            // jumlah sel acuan
+const BELOK_MIN = 0.3;          // kecepatan maju minimum saat belok tajam (30% VMAX)
 
 // ==========================================
 // 2. STATUS
@@ -81,7 +89,7 @@ let cells = new Map();
 let rangkaSet = new Set();
 let thrs = [];
 let terakhir = performance.now();
-let errorTerakhir = null;      // pesan error terakhir, selalu ditampilkan di layar
+let errorTerakhir = null;
 
 let kapal = {
     x: 0, y: 0, th: 0, v: 0,
@@ -115,7 +123,6 @@ function coba(nama, fn) {
     try { fn(); } catch (err) { catatError(nama, err); }
 }
 
-// Gambar dianggap siap hanya jika sudah dimuat dan berhasil (naturalWidth > 0)
 function siapGambar(img) {
     return !!img && img.complete && img.naturalWidth > 0;
 }
@@ -268,13 +275,16 @@ function hitungKoneksi() {
 }
 
 // ==========================================
-// 7. GERAK (tanpa inersia)
+// 7. GERAK (berbelok sambil maju)
 // ==========================================
+// Kapal tidak berputar di tempat. Laju putar dibatasi oleh jumlah pendorong aktif
+// dan jumlah sel. Saat belok, kecepatan maju berkurang supaya lengkungannya wajar.
 function kendali(dt) {
     const k = kapal;
     k.gas = false;
 
-    if (!k.target || !thrs.some(t => t.aktif)) {
+    const aktif = thrs.filter(t => t.aktif).length;
+    if (!k.target || aktif === 0) {
         k.v = 0; k.target = null; k.rem = false; k.status = 'diam';
         return;
     }
@@ -287,10 +297,15 @@ function kendali(dt) {
         return;
     }
 
+    // Laju putar: naik dengan dorongan, turun dengan akar massa
+    const sel = Math.max(1, cells.size);
+    const omegaMax = OMEGA_REF * (aktif / PENDORONG_REF) * Math.sqrt(SEL_REF / sel);
+
     const hd = Math.atan2(dx, -dy);
     const err = sudutSelisih(hd, k.th);
-    k.th += clamp(err, -PUTAR * dt, PUTAR * dt);
+    k.th += clamp(err, -omegaMax * dt, omegaMax * dt);
 
+    // Mulai mengerem saat jarak sisa sama dengan jarak henti
     if (!k.rem && k.v > 0 && jarak <= (k.v * k.v) / (2 * REM)) k.rem = true;
 
     if (k.rem) {
@@ -300,10 +315,12 @@ function kendali(dt) {
             k.target = null; k.rem = false; k.status = 'diam';
             return;
         }
-    } else if (Math.abs(err) < SEJAJAR) {
-        k.v = VMAX; k.gas = true; k.status = 'maju';
     } else {
-        k.v = 0; k.status = 'menghadap';
+        // Belok sambil maju: makin menyimpang dari arah tujuan, makin pelan
+        const faktor = clamp(Math.cos(err), BELOK_MIN, 1);
+        k.v = VMAX * faktor;
+        k.gas = true;
+        k.status = Math.abs(err) > 0.5 ? 'belok' : 'maju';
     }
 
     k.x += Math.sin(k.th) * k.v * dt;
@@ -621,7 +638,6 @@ function gambarUI() {
     ctx.restore();
 }
 
-// Pesan error selalu di bagian atas layar, dipanggil di luar gambar()
 function gambarError() {
     if (!errorTerakhir) return;
     ctx.save();
@@ -663,8 +679,6 @@ function gambar() {
 // ==========================================
 // 11. LOOP
 // ==========================================
-// requestAnimationFrame dipanggil paling awal, jadi loop tidak pernah berhenti.
-// Logika, gambar, dan pesan error masing-masing dibungkus sendiri.
 function loop(now) {
     requestAnimationFrame(loop);
 
@@ -682,7 +696,6 @@ function loop(now) {
     });
 
     coba('gambar', gambar);
-
     try { gambarError(); } catch (_) {}
 }
 
