@@ -69,24 +69,28 @@ const F_THR = 6.4e6;            // N per pendorong utama (acuan)
 const ACEL_MAKS = 20;           // m/s², batas tubuh awak
 const SPOOL = 2;                // detik, daya naik dari 0 ke penuh
 const VMAX = 200;               // px/s = m/s
-const REM = 40;                 // m/s², perlambatan
+const REM = 40;                 // m/s², perlambatan (dipakai juga untuk berhenti bertahap)
 
-// Zona titik: area tak terlihat sebesar sekitar setengah kerangka
-const ZONA_TITIK = 160;         // px dunia (radius)
-const ARRIVE_TH = 0.17;         // rad (sekitar 10 derajat) untuk bayangan akhir
+// Zona titik dan toleransi berhenti
+const ZONA_TITIK = 160;         // px, zona titik jalur (tak terlihat)
+const ARRIVE_POS = 16;          // px, jarak bayangan akhir untuk dianggap sampai
+const ARRIVE_TH = 0.17;         // rad (sekitar 10 derajat)
+const ARRIVE_V = 2;             // px/s, kecepatan maksimum saat dianggap sampai
 
 // Belok: hanya untuk tikungan nyata
-const AMBANG_BELOK = 0.3;       // rad (sekitar 17 derajat)
-const OMEGA_REF = 0.4;          // rad/s
+const AMBANG_BELOK = 0.3;       // rad (sekitar 17 derajat), selisih di bawah ini diabaikan
+const TIKUNGAN_MAKS = 400;      // px, jarak tikungan yang diperhitungkan
+const OMEGA_REF = 0.4;          // rad/s, laju putar acuan kruiser
 const PENDORONG_REF = 5;
 const SEL_REF = 232;
-const BLEND_JARAK = 160;        // px
+const BELOK_MIN = 0.3;
+const BLEND_JARAK = 160;        // px, arah akhir mulai ikut memengaruhi saat dekat
 
 // Jalur
-const LOOK_JARAK = 150;         // px, titik pandang di depan kapal
-const PANAH_SUDUT = 0.35;       // rad
-const JALUR_STEP = 6;           // px layar
-const SUSUL_KECEPATAN = 40;     // px/s, kecepatan titik awal jalur sisa menyusul kapal
+const LOOK_JARAK = 220;         // px, titik pandang di depan kapal sepanjang jalur
+const PANAH_SUDUT = 0.35;       // rad, belokan yang memunculkan panah
+const JALUR_STEP = 6;           // px layar, jarak antar titik saat menggambar
+const SUSUL_DETIK = 0.5;        // detik, jalur sisa menyusul posisi kapal
 
 // Koreksi bayangan saat dekat
 const KOREKSI_JARAK = 200;      // px
@@ -94,7 +98,7 @@ const KOREKSI_SUDUT = 0.44;     // rad
 
 // Interaksi
 const RADIUS_SENTUH_KAPAL = 80; // px layar
-const UJUNG_SENTUH = 90;        // px layar, area sentuh titik akhir (diperbesar)
+const UJUNG_SENTUH = 90;        // px layar, area sentuh titik akhir jalur
 
 // ==========================================
 // 2. STATUS
@@ -111,13 +115,11 @@ let rangkaSet = new Set();
 let thrs = [];
 let terakhir = performance.now();
 let errorTerakhir = null;
-let belokKunci = 0;             // arah belok yang dikunci untuk satu tikungan (0 = tidak ada)
 
 let kapal = {
     x: 0, y: 0, th: 0, v: 0, nyala: 0,
-    target: null,               // bayangan akhir: { x, y, th }
-    jalur: [],                  // titik jalur: { x, y, panah }, titik terakhir = target
-    jalurAwal: null,            // titik awal jalur sisa yang menyusul kapal
+    target: null,               // bayangan akhir: { x, y, th }, sama dengan titik terakhir rute
+    rute: [],                   // titik rute: { x, y, panah }, titik terakhir = target
     hidup: false, status: '-', tersambung: 0, gas: false
 };
 
@@ -156,6 +158,7 @@ function siapGambar(img) {
 // ==========================================
 function kunci(i, j) { return i + ',' + j; }
 function clamp(v, a, b) { return Math.max(a, Math.min(b, v)); }
+function dist(a, b) { return Math.hypot(a.x - b.x, a.y - b.y); }
 function sudutSelisih(a, b) {
     let d = a - b;
     while (d > Math.PI) d -= 2 * Math.PI;
@@ -302,74 +305,119 @@ function hitungKoneksi() {
 }
 
 // ==========================================
-// 7. JALUR
+// 7. RUTE (jalur)
 // ==========================================
-// Titik jalur dianggap dilewati saat kapal masuk zona titik (radius ZONA_TITIK).
-// Titik yang sudah dilewati dibuang dari depan. Garis yang sudah dilewati ikut hilang.
-function trimJalur() {
+// Rute disimpan sebagai titik dunia. Titik terakhir adalah bayangan akhir dan tidak pernah bergeser.
+// Titik lain ikut bergeser ke posisi kapal saat kapal keluar dari garis, sehingga bentuk jalur tetap.
+
+// Proyeksi kapal ke rute: segmen terdekat dan titik terdekatnya
+function proyeksiKeRute() {
+    const r = kapal.rute;
+    if (r.length < 2) return null;
+    let best = null;
+    for (let i = 0; i < r.length - 1; i++) {
+        const a = r[i], b = r[i + 1];
+        const dx = b.x - a.x, dy = b.y - a.y;
+        const L2 = dx * dx + dy * dy;
+        let t = L2 > 0 ? ((kapal.x - a.x) * dx + (kapal.y - a.y) * dy) / L2 : 0;
+        t = clamp(t, 0, 1);
+        const px = a.x + dx * t, py = a.y + dy * t;
+        const d = Math.hypot(kapal.x - px, kapal.y - py);
+        if (!best || d < best.d) best = { seg: i, x: px, y: py, d };
+    }
+    return best;
+}
+
+// Jarak sepanjang rute dari titik proyeksi ke setiap titik rute di depannya
+function arcDariProyeksi(p) {
+    const r = kapal.rute;
+    const arcs = new Array(r.length).fill(0);
+    let prev = { x: p.x, y: p.y }, acc = 0;
+    for (let i = p.seg + 1; i < r.length; i++) {
+        acc += dist(prev, r[i]);
+        arcs[i] = acc;
+        prev = r[i];
+    }
+    return { arcs, total: acc };
+}
+
+// Titik rute yang sudah dilewati dibuang dari depan
+function trimRute() {
     const k = kapal;
-    while (k.jalur.length > 1) {
-        const p = k.jalur[0];
-        const d = Math.hypot(p.x - k.x, p.y - k.y);
+    while (k.rute.length > 2) {
+        const p = proyeksiKeRute();
+        if (!p) break;
+        const r0 = k.rute[0];
+        const d = dist(k, r0);
         const fx = Math.sin(k.th), fy = -Math.cos(k.th);
-        const depan = (p.x - k.x) * fx + (p.y - k.y) * fy;
-        if (d < ZONA_TITIK || depan < 0) k.jalur.shift();
+        const depan = (r0.x - k.x) * fx + (r0.y - k.y) * fy;
+        // Dilewati kalau proyeksi sudah lewat segmen pertama, atau titik itu sudah di belakang kapal dalam zona
+        if (p.seg >= 1 || (depan < 0 && d < ZONA_TITIK)) k.rute.shift();
         else break;
     }
 }
 
-function sisaJalur() {
+// Rute sisa menyusul kapal: titik-titik rute digeser ke arah kapal secara bertahap.
+// Bentuk rute tetap. Titik akhir (bayangan) tidak ikut bergeser.
+function koreksiRute(dt) {
     const k = kapal;
-    let prev = { x: k.x, y: k.y }, s = 0;
-    for (const p of k.jalur) {
-        s += Math.hypot(p.x - prev.x, p.y - prev.y);
-        prev = p;
+    const r = k.rute;
+    if (r.length < 2) return;
+    const p = proyeksiKeRute();
+    if (!p) return;
+    const ex = k.x - p.x, ey = k.y - p.y;
+    if (Math.hypot(ex, ey) < 1) return;
+    const { arcs, total } = arcDariProyeksi(p);
+    if (total < 1) return;
+    const frac = Math.min(1, dt / SUSUL_DETIK);
+    for (let i = p.seg + 1; i < r.length - 1; i++) {
+        const w = clamp(1 - arcs[i] / total, 0, 1);
+        r[i].x += ex * frac * w;
+        r[i].y += ey * frac * w;
     }
+}
+
+// Rute dari posisi kapal sekarang: kapal -> titik rute di depannya
+function jalurDepan() {
+    return [{ x: kapal.x, y: kapal.y }, ...kapal.rute];
+}
+
+function sisaJalur() {
+    const pts = jalurDepan();
+    let s = 0;
+    for (let i = 1; i < pts.length; i++) s += dist(pts[i - 1], pts[i]);
     return s;
 }
 
-// Titik pandang: LOOK_JARAK di depan kapal sepanjang jalur
+// Titik pandang: LOOK_JARAK di depan kapal sepanjang rute
 function titikPandang() {
-    const k = kapal;
-    let prev = { x: k.x, y: k.y }, acc = 0;
-    for (const p of k.jalur) {
-        const seg = Math.hypot(p.x - prev.x, p.y - prev.y);
+    const pts = jalurDepan();
+    let acc = 0;
+    for (let i = 1; i < pts.length; i++) {
+        const seg = dist(pts[i - 1], pts[i]);
         if (seg > 0 && acc + seg >= LOOK_JARAK) {
             const t = (LOOK_JARAK - acc) / seg;
-            return { x: prev.x + (p.x - prev.x) * t, y: prev.y + (p.y - prev.y) * t };
+            return { x: pts[i - 1].x + (pts[i].x - pts[i - 1].x) * t, y: pts[i - 1].y + (pts[i].y - pts[i - 1].y) * t };
         }
         acc += seg;
-        prev = p;
     }
-    return k.jalur[k.jalur.length - 1];
+    return pts[pts.length - 1];
 }
 
-// Tikungan nyata berikutnya dihitung hanya dari segmen di depan kapal,
-// dimulai dari titik pandang, bukan dari posisi kapal, supaya potongan palsu tidak terdeteksi.
-function tikunganBerikut() {
-    const k = kapal;
-    const tp = titikPandang();
-    const dari = { x: tp.x, y: tp.y };
-    let prev = null, arahSebelum = null, acc = 0;
-    for (const p of k.jalur) {
-        if (prev === null) {
-            // segmen pertama dimulai dari titik pandang; lewati titik yang sudah tercakup
-            const d0 = Math.hypot(p.x - dari.x, p.y - dari.y);
-            if (d0 < ZONA_TITIK) { prev = p; continue; }
-            prev = dari;
-        }
-        const seg = Math.hypot(p.x - prev.x, p.y - prev.y);
-        if (seg > 0) {
-            const arah = arahKe(p.x - prev.x, p.y - prev.y);
-            if (arahSebelum !== null) {
-                const beda = sudutSelisih(arah, arahSebelum);
-                if (Math.abs(beda) > AMBANG_BELOK) return { sudut: beda, jarak: acc };
-            }
-            arahSebelum = arah;
-        }
-        acc += seg;
-        prev = p;
-        if (acc > 400) break;
+// Tikungan nyata di depan: hanya dihitung dari segmen rute (bukan sambungan kapal), dan hanya di atas ambang
+function cariTikungan(p) {
+    if (!p) return null;
+    const r = kapal.rute;
+    const { arcs } = arcDariProyeksi(p);
+    const dariKapal = dist(kapal, p);
+    for (let i = p.seg + 1; i <= r.length - 2; i++) {
+        const arc = dariKapal + arcs[i];
+        if (arc > TIKUNGAN_MAKS) break;
+        if (dist(r[i], r[i - 1]) < 1 || dist(r[i + 1], r[i]) < 1) continue;
+        const masuk = arahKe(r[i].x - r[i - 1].x, r[i].y - r[i - 1].y);
+        const keluar = arahKe(r[i + 1].x - r[i].x, r[i + 1].y - r[i].y);
+        const beda = sudutSelisih(keluar, masuk);
+        if (Math.abs(beda) > AMBANG_BELOK) return { arc, sudut: beda, out: keluar };
     }
     return null;
 }
@@ -389,7 +437,7 @@ function hitungPanah(list, origin) {
 }
 
 function previewList() {
-    if (ptr && ptr.aksi === 'sambung') return [...kapal.jalur, ...draftPts.slice(1)];
+    if (ptr && ptr.aksi === 'sambung') return [...kapal.rute, ...draftPts.slice(1)];
     return draftPts;
 }
 
@@ -397,38 +445,24 @@ function sedangGambar() {
     return ptr && ptr.moved && (ptr.aksi === 'kapal' || ptr.aksi === 'sambung') && draftPts.length > 0;
 }
 
+// Rute baru dikunci saat jari dilepas. Titik terakhir menjadi bayangan akhir.
 function kunciJalur() {
     const list = previewList();
-    if (list.length < 1) return;
+    if (list.length < 2) return;
     hitungPanah(list, { x: kapal.x, y: kapal.y });
     const last = list[list.length - 1];
-    const prev = list.length >= 2 ? list[list.length - 2] : { x: kapal.x, y: kapal.y };
-    const dx = last.x - prev.x, dy = last.y - prev.y;
-    const th = (dx === 0 && dy === 0) ? kapal.th : arahKe(dx, dy);
-    kapal.jalur = list;
-    kapal.target = { x: last.x, y: last.y, th };
-    kapal.jalurAwal = null;
-    belokKunci = 0;
+    const prev = list[list.length - 2];
+    last.th = arahKe(last.x - prev.x, last.y - prev.y);
+    kapal.rute = list;
+    kapal.target = last;
 }
 
-// Jalur sisa menyusul kapal: titik awal jalur digeser perlahan ke posisi kapal,
-// lalu potongan jalur di depan kapal dipangkas supaya tidak ada potongan palsu.
-function geserJalur(dt) {
-    const k = kapal;
-    if (k.jalur.length < 2) return;
-    const tp = titikPandang();
-    if (!k.jalurAwal) k.jalurAwal = { x: tp.x, y: tp.y };
-    const dx = tp.x - k.jalurAwal.x, dy = tp.y - k.jalurAwal.y;
-    const d = Math.hypot(dx, dy);
-    if (d < 1) return;
-    const langkah = Math.min(d, SUSUL_KECEPATAN * dt);
-    k.jalurAwal.x += dx / d * langkah;
-    k.jalurAwal.y += dy / d * langkah;
-    // Potongan pertama jalur disambung ke posisi kapal yang sudah menyusul
-    const pertama = k.jalur[0];
-    if (Math.hypot(pertama.x - k.x, pertama.y - k.y) > ZONA_TITIK) {
-        k.jalur.unshift({ x: k.x, y: k.y, panah: false });
-    }
+function resetGerak() {
+    kapal.target = null;
+    kapal.rute = [];
+    kapal.v = 0;
+    kapal.nyala = 0;
+    kapal.status = 'diam';
 }
 
 // ==========================================
@@ -452,88 +486,74 @@ function kendali(dt) {
 
     const aktif = thrs.filter(t => t.aktif).length;
     if (aktif === 0) {
-        k.target = null; k.jalur = []; k.v = 0; k.nyala = 0; k.status = 'diam';
-        belokKunci = 0;
+        resetGerak();
         return;
     }
     if (!k.target) {
         k.v = 0; k.nyala = 0; k.status = 'diam';
-        belokKunci = 0;
         return;
     }
 
-    trimJalur();
+    trimRute();
 
     const end = k.target;
-    const dEnd = Math.hypot(end.x - k.x, end.y - k.y);
+    const dEnd = dist(k, end);
     const sisa = sisaJalur();
-    const ikutiJalur = k.jalur.length > 1 && sisa > LOOK_JARAK;
+    const ikutiJalur = k.rute.length >= 2 && sisa > LOOK_JARAK;
+    const om = omegaMaks(aktif);
 
-    // Sampai: kapal masuk zona bayangan dan arahnya cocok
+    // Koreksi arah bayangan saat dekat, lalu cek sampai (berhenti hanya setelah benar-benar pelan)
     if (!ikutiJalur) {
         if (dEnd < KOREKSI_JARAK && Math.abs(sudutSelisih(end.th, k.th)) < KOREKSI_SUDUT) {
             end.th -= sudutSelisih(end.th, k.th) * Math.min(1, dt * 2);
         }
-        if (dEnd <= ZONA_TITIK && Math.abs(sudutSelisih(end.th, k.th)) <= ARRIVE_TH) {
-            k.target = null; k.jalur = []; k.v = 0; k.nyala = 0; k.status = 'diam';
-            belokKunci = 0;
+        if (dEnd <= ARRIVE_POS && k.v < ARRIVE_V && Math.abs(sudutSelisih(end.th, k.th)) <= ARRIVE_TH) {
+            resetGerak();
             return;
         }
     }
 
-    // Titik tujuan sementara: titik pandang di jalur, atau bayangan saat dekat
-    let tx, ty, blend;
-    if (ikutiJalur) {
-        const p = titikPandang();
-        tx = p.x; ty = p.y; blend = false;
+    // Arah yang dikejar
+    const proj = ikutiJalur ? proyeksiKeRute() : null;
+    const tk = ikutiJalur ? cariTikungan(proj) : null;
+    let hd;
+    if (!ikutiJalur) {
+        const hdPos = arahKe(end.x - k.x, end.y - k.y);
+        const w = clamp(1 - dEnd / BLEND_JARAK, 0, 1);
+        hd = hdPos + sudutSelisih(end.th, hdPos) * w;
+    } else if (tk && tk.arc <= LOOK_JARAK) {
+        // Tikungan sudah dekat: kapal mulai mengarah ke arah keluar tikungan
+        hd = tk.out;
     } else {
-        tx = end.x; ty = end.y; blend = true;
+        const tp = titikPandang();
+        hd = arahKe(tp.x - k.x, tp.y - k.y);
     }
 
-    const dx = tx - k.x, dy = ty - k.y;
-    const jarak = Math.hypot(dx, dy);
-    const om = omegaMaks(aktif);
-
-    let hd = arahKe(dx, dy);
-    if (blend) {
-        const w = clamp(1 - jarak / BLEND_JARAK, 0, 1);
-        hd = hd + sudutSelisih(end.th, hd) * w;
+    // Selisih kecil diabaikan di jalur lurus. Belok hanya kalau tikungan nyata atau selisih besar.
+    const err = sudutSelisih(hd, k.th);
+    const wajibBelok = !ikutiJalur || (tk && tk.arc <= LOOK_JARAK) || Math.abs(err) > AMBANG_BELOK;
+    if (wajibBelok) {
+        const f = clamp(Math.abs(err) / AMBANG_BELOK, 0.3, 1);
+        const maks = om * f * dt;
+        k.th += clamp(err, -maks, maks);
     }
 
-    // Belok sekali per tikungan nyata. Kunci dilepas saat kapal sudah searah titik pandang.
-    const tk = ikutiJalur ? tikunganBerikut() : null;
-    let err = sudutSelisih(hd, k.th);
-    if (tk && tk.jarak < 200 && belokKunci === 0) {
-        belokKunci = Math.sign(tk.sudut);
-    }
-    if (belokKunci !== 0 && (!tk || Math.abs(err) < 0.05)) {
-        belokKunci = 0;
-    }
-
-    if (belokKunci !== 0) {
-        const sisaBelok = tk ? Math.abs(tk.sudut) : Math.abs(err);
-        k.th += belokKunci * Math.min(om * dt, sisaBelok);
-        err = sudutSelisih(hd, k.th);
-    } else {
-        // Lurus: selisih kecil diabaikan
-        if (Math.abs(err) > AMBANG_BELOK || !ikutiJalur) {
-            k.th += clamp(err, -om * dt, om * dt);
-        }
-    }
-
+    // Daya naik halus
     k.nyala += dt;
     const s = clamp(k.nyala / SPOOL, 0, 1);
     const daya = s * s * (3 - 2 * s);
 
-    // Batas kecepatan: pengereman ke titik akhir, dan tikungan nyata
+    // Batas kecepatan: pengereman ke titik akhir, tikungan nyata, dan sudut hadap
     const jarakRem = ikutiJalur ? sisa : dEnd;
-    const vRem = Math.sqrt(2 * REM * Math.max(0, jarakRem));
-    let vTikung = VMAX;
+    let vTarget = Math.min(VMAX, Math.sqrt(2 * REM * Math.max(0, jarakRem)));
     if (tk) {
-        vTikung = Math.min(VMAX, om * Math.max(tk.jarak, 1) * 0.5);
+        vTarget = Math.min(vTarget,
+            om * Math.max(tk.arc, 1) * 0.5,
+            Math.sqrt(2 * REM * Math.max(0, tk.arc)));
     }
-    const vTarget = Math.min(VMAX, vRem, vTikung);
+    vTarget = Math.min(vTarget, VMAX * clamp(Math.cos(err), BELOK_MIN, 1));
 
+    // Kecepatan naik dengan percepatan terbatas, turun dengan perlambatan REM
     if (k.v < vTarget) {
         k.v = Math.min(vTarget, k.v + accelMaks(aktif) * daya * dt);
     } else {
@@ -542,12 +562,13 @@ function kendali(dt) {
     k.v = Math.max(0, k.v);
 
     k.gas = k.v > 0.5;
-    k.status = belokKunci !== 0 ? 'belok' : 'maju';
+    k.status = (ikutiJalur && Math.abs(err) > AMBANG_BELOK) ? 'belok' : 'maju';
 
     k.x += Math.sin(k.th) * k.v * dt;
     k.y += -Math.cos(k.th) * k.v * dt;
 
-    geserJalur(dt);
+    // Rute menyusul kapal, bayangan akhir tetap
+    koreksiRute(dt);
 }
 
 // ==========================================
@@ -581,10 +602,7 @@ function ubahZoom(arah) {
 function masukBangun() {
     mode = 'bangun';
     kapal.hidup = false;
-    kapal.target = null;
-    kapal.jalur = [];
-    kapal.jalurAwal = null;
-    kapal.v = 0; kapal.nyala = 0;
+    resetGerak();
     kapal.x = 0; kapal.y = 0;
     kapal.th = 0;
     kamera.x = 0; kamera.y = 0;
@@ -593,7 +611,6 @@ function masukBangun() {
     seret = null;
     pilihKapal = false;
     draftPts = [];
-    belokKunci = 0;
 }
 
 function konfirm() {
@@ -637,12 +654,14 @@ canvas.addEventListener('pointerdown', aman('pointerdown', e => {
 
     if (dalam(p, tombolBuild())) { ptr.aksi = 'build'; return; }
 
+    // Titik akhir rute: seret untuk meneruskan jalur
     if (kapal.target && Math.hypot(p.x - toSX(kapal.target.x), p.y - toSY(kapal.target.y)) < UJUNG_SENTUH) {
         ptr.aksi = 'sambung';
         draftPts = [{ x: kapal.target.x, y: kapal.target.y, panah: false }];
         return;
     }
 
+    // Ketuk atau tahan kapal: mulai gambar rute baru
     if (Math.hypot(p.x - toSX(kapal.x), p.y - toSY(kapal.y)) < RADIUS_SENTUH_KAPAL) {
         ptr.aksi = 'kapal';
         draftPts = [];
@@ -803,7 +822,7 @@ function gambarKapal() {
     gambarKapalPada(kapal.x, kapal.y, kapal.th, 1, mode === 'bangun');
 }
 
-// Garis jalur tanpa titik tambahan. Panah hanya di tikungan nyata.
+// Garis rute tanpa titik tambahan. Panah hanya di tikungan nyata.
 function gambarGaris(list, warna) {
     if (!list.length) return;
     ctx.save();
@@ -847,8 +866,9 @@ function gambarJalur() {
         return;
     }
 
-    if (kapal.target && kapal.jalur.length) {
-        gambarGaris(kapal.jalur, 'rgba(253,224,71,0.9)');
+    if (kapal.target && kapal.rute.length) {
+        hitungPanah(kapal.rute, { x: kapal.x, y: kapal.y });
+        gambarGaris(kapal.rute, 'rgba(253,224,71,0.9)');
     }
 }
 
@@ -928,7 +948,7 @@ function gambarUI() {
         `Status: ${kapal.status}`,
         `Kecepatan: ${kapal.v.toFixed(0)} px/s`,
         `Heading: ${((kapal.th * 180 / Math.PI + 360) % 360).toFixed(0)}°`,
-        `Jalur: ${kapal.jalur.length} titik`,
+        `Rute: ${kapal.rute.length} titik`,
         `Hapus: ${hapusAktif ? 'AKTIF' : 'mati'}`,
         `Zoom: ${kamera.skala.toFixed(2)}`
     ];
@@ -995,7 +1015,9 @@ function loop(now) {
         hitungKoneksi();
         if (mode === 'uji') kendali(dt);
         else {
-            kapal.v = 0; kapal.target = null; kapal.jalur = []; kapal.gas = false; kapal.status = '-';
+            resetGerak();
+            kapal.gas = false;
+            kapal.status = '-';
         }
     });
 
