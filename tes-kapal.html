@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-<title>Tes Kapal Revisi</title>
+<title>Tes Kapal Revisi - M14</title>
 <style>
 body,html{margin:0;padding:0;width:100%;height:100%;overflow:hidden;background:#07080d;font-family:monospace}
 canvas{display:block;touch-action:none}
@@ -65,10 +65,12 @@ const SPOOL = 2;
 const VMAX = 200;
 const REM = 40;
 
-// Toleransi berhenti
-const ARRIVE_POS = 40;          // Radius (px) untuk mode "Hard Stop"
-const ARRIVE_TH = 0.3;          // Toleransi sudut (rad)
-const ARRIVE_V = 2;             // Kecepatan minimum untuk dinyatakan berhenti
+// --- PARAMETER KINEMATIK BARU ---
+const ARRIVE_POS = 40;          
+const ARRIVE_TH = 0.3;          
+const ARRIVE_V = 2;             
+const MIN_CORNER_SPEED = 30;    // Kecepatan minimum saat melewati tikungan
+const TURN_SPEED_FACTOR = 50;   // Kecepatan minimal untuk bisa belok maksimal
 
 const AMBANG_BELOK = 0.3;
 const TIKUNGAN_MAKS = 400;
@@ -285,7 +287,7 @@ function hitungKoneksi() {
 }
 
 // ==========================================
-// 7. RUTE
+// 7. RUTE & PATH SMOOTHING (CHAINKIN)
 // ==========================================
 function jarakKeSegmen(p, a, b) {
     const dx = b.x - a.x, dy = b.y - a.y;
@@ -312,6 +314,25 @@ function sederhanakan(pts) {
     const last = pts[pts.length - 1];
     out.push({ x: last.x, y: last.y });
     return out;
+}
+
+// ALGORITMA CHAIKIN UNTUK MELENGKUNGKAN TIKUNGAN
+function chaikin(pts, iterasi = 3) {
+    if (pts.length <= 2) return pts;
+    let result = pts;
+    for (let i = 0; i < iterasi; i++) {
+        const next = [];
+        next.push(result[0]);
+        for (let j = 0; j < result.length - 1; j++) {
+            const p0 = result[j], p1 = result[j + 1];
+            const q = { x: 0.75 * p0.x + 0.25 * p1.x, y: 0.75 * p0.y + 0.25 * p1.y };
+            const r = { x: 0.25 * p0.x + 0.75 * p1.x, y: 0.25 * p0.y + 0.75 * p1.y };
+            next.push(q, r);
+        }
+        next.push(result[result.length - 1]);
+        result = next;
+    }
+    return result;
 }
 
 function proyeksiDariSeg(fromSeg) {
@@ -393,12 +414,17 @@ function sedangGambar() {
     return ptr && ptr.moved && (ptr.aksi === 'kapal' || ptr.aksi === 'sambung') && draftPts.length > 0;
 }
 
+// MENGGUNAKAN CHAIKIN UNTUK MELENGKUNGKAN JALUR YANG DIGAMBAR USER
 function kunciJalur() {
     let list = sederhanakan(previewList());
     if (list.length < 2) return;
+    
+    list = chaikin(list, 3); // Haluskan 3 iterasi (sangat mulus)
+    
     const last = list[list.length - 1];
     const prev = list[list.length - 2];
     last.th = arahKe(last.x - prev.x, last.y - prev.y);
+    
     kapal.rute = list;
     kapal.seg = 0;
     kapal.target = { x: last.x, y: last.y, th: last.th };
@@ -414,7 +440,7 @@ function resetGerak() {
 }
 
 // ==========================================
-// 8. GERAK
+// 8. GERAK (REALISTIC KINEMATICS)
 // ==========================================
 function massaKapal() { return Math.max(1, cells.size) * KG_PER_SEL; }
 function accelMaks(aktif) { return Math.min(aktif * F_THR / massaKapal(), ACEL_MAKS); }
@@ -436,32 +462,24 @@ function kendali(dt) {
     const sisa = proj ? sisaRute(proj) : 0;
     const ikutiJalur = !!proj && sisa > LOOK_JARAK;
 
-    // ====================================================
-    // PERBAIKAN UTAMA: HARD STOP ZONE (Zona Berhenti Paksa)
-    // ====================================================
+    // --- HARD STOP ZONE ---
     if (!ikutiJalur && dEnd <= ARRIVE_POS) {
-        // 1. Paksa melambat drastis (rem 2x lebih kuat)
         k.v = Math.max(0, k.v - REM * 2 * dt);
-        
-        // 2. Hadapkan kapal ke arah bayangan
         const err = sudutSelisih(end.th, k.th);
         if (Math.abs(err) > ARRIVE_TH) {
-            const maks = om * dt;
+            // Putaran di hard stop juga dibatasi kecepatan
+            const vFactor = clamp(k.v / TURN_SPEED_FACTOR, 0, 1);
+            const maks = om * vFactor * dt;
             k.th += clamp(err, -maks, maks);
             k.status = 'memutar';
         } else if (k.v < ARRIVE_V) {
-            // 3. Jika kecepatan sudah sangat lambat DAN arah sudah pas, berhenti total
             resetGerak();
             return;
         }
-
-        // 4. Tetap meluncur sedikit (karena sisa kecepatan)
         k.x += Math.sin(k.th) * k.v * dt;
         k.y += -Math.cos(k.th) * k.v * dt;
-        
-        return; // Keluar dari fungsi, jangan hitung akselerasi mesin lagi
+        return; 
     }
-    // ====================================================
 
     let hd, tk = null;
     if (ikutiJalur) {
@@ -480,9 +498,13 @@ function kendali(dt) {
 
     const err = sudutSelisih(hd, k.th);
     const wajibBelok = !ikutiJalur || (tk && tk.arc <= 60) || Math.abs(err) > AMBANG_BELOK;
+    
+    // --- KINEMATIC TURNING (KAPAL TIDAK BISA PUTAR SAAT DIAM) ---
     if (wajibBelok) {
         const f = clamp(Math.abs(err) / AMBANG_BELOK, 0.3, 1);
-        const maks = om * f * dt;
+        // Kecepatan harus > 0 agar bisa berbelok (seperti mobil)
+        const vFactor = clamp(k.v / TURN_SPEED_FACTOR, 0, 1); 
+        const maks = om * f * vFactor * dt;
         k.th += clamp(err, -maks, maks);
     }
 
@@ -498,8 +520,12 @@ function kendali(dt) {
     }
 
     if (tk) {
-        vTarget = Math.min(vTarget, om * Math.max(tk.arc, 1) * 0.5, Math.sqrt(2 * REM * Math.max(0, tk.arc)));
+        // --- ANTI MACET: KECEPATAN MINIMUM SAAT TIKUNGAN ---
+        let vCorner = om * Math.max(tk.arc, 1) * 0.5;
+        vCorner = Math.max(vCorner, MIN_CORNER_SPEED); // Paksa tetap jalan meski tikungan tajam
+        vTarget = Math.min(vTarget, vCorner, Math.sqrt(2 * REM * Math.max(0, tk.arc)));
     }
+    
     vTarget = Math.min(vTarget, VMAX * clamp(Math.cos(err), BELOK_MIN, 1));
 
     if (k.v < vTarget) {
