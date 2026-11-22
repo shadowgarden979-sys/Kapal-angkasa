@@ -133,6 +133,12 @@ let kapal = {
     koreksi: 0
 };
 
+// Suara pendorong: satu audio untuk seluruh kapal, loop, volume diatur tiap frame
+const sfxPendorong = new Audio('suara-pendorong.mp3');
+sfxPendorong.loop = true;
+sfxPendorong.volume = 0;
+const SFX_VOLUME_DASAR = 0.4;   // volume dasar sebelum faktor kecepatan dan zoom
+
 // ==========================================
 // 3. PENGAMAN ERROR
 // ==========================================
@@ -617,12 +623,16 @@ function masukBangun() {
     kapal.x = 0; kapal.y = 0; kapal.th = 0;
     kamera.x = 0; kamera.y = 0; kamera.skala = SKALA_BANGUN;
     hapusAktif = false; seret = null; pilihKapal = false; draftPts = [];
+    sfxPendorong.pause();
+    sfxPendorong.volume = 0;
 }
 
 function konfirm() {
     mode = 'uji'; kapal.hidup = true;
     kamera.skala = 1; kamera.x = kapal.x; kamera.y = kapal.y;
     hapusAktif = false; seret = null; pilihKapal = false; draftPts = [];
+    // Membuka kunci audio lewat interaksi tombol OK
+    sfxPendorong.play().then(() => sfxPendorong.pause()).catch(() => {});
 }
 
 // ==========================================
@@ -740,23 +750,29 @@ function gambarKisi() {
     ctx.stroke();
 }
 
-// Api pendorong: lebar disamakan dengan pendorong, panjang nyala berubah, berkedip, dan goyang
+// Api pendorong: lebar 32 px, bagian atas dipotong, panjang ikut kecepatan, berkedip, goyang lemah
 function gambarApi(t, waktu) {
     if (!siapGambar(gbr.efek)) return;
     const img = gbr.efek;
     const skalaTinggi = PENDORONG_LEBAR / img.naturalWidth;
-    const tinggiPenuh = img.naturalHeight * skalaTinggi;
 
-    // Panjang nyala berubah 60–100% dari gambar
-    const nyala = clamp(0.8 + 0.2 * Math.sin(waktu * 0.02 + t.i), 0.6, 1);
-    const tinggi = tinggiPenuh * nyala;
+    // Panjang nyala mengikuti kecepatan kapal (0.1 sampai 1 dari panjang penuh)
+    const fraksi = clamp(kapal.v / JENIS_AKTIF.lurus, 0.1, 1);
 
-    // Berkedip: alpha berayun dua frekuensi
+    // Nyala kecil bergetar sedikit
+    const nyalaKecil = clamp(0.9 + 0.1 * Math.sin(waktu * 0.02 + t.i), 0.8, 1);
+
+    // Kedip
     const kedip = clamp(0.8 + 0.1 * Math.sin(waktu * 0.03) + 0.1 * Math.sin(waktu * 0.047 + t.j), 0.6, 1);
 
-    // Goyang kecil
-    const goyang = Math.sin(waktu * 0.015 + t.i * 0.5);
-    const rot = Math.sin(waktu * 0.02 + t.j) * (2 * Math.PI / 180);
+    // Goyang lemah
+    const goyang = Math.sin(waktu * 0.015 + t.i * 0.5) * 0.4;
+    const rot = Math.sin(waktu * 0.02 + t.j) * (0.7 * Math.PI / 180);
+
+    // Bagian atas dipotong: ambil dari bawah gambar sepanjang fraksi
+    const tinggiSumber = img.naturalHeight * fraksi * nyalaKecil;
+    const sy = img.naturalHeight - tinggiSumber;
+    const tinggiTampil = tinggiSumber * skalaTinggi;
 
     const x = t.i * C - PX + PENDORONG_LEBAR / 2 + goyang;
     const y = t.j * C - PY + 48;
@@ -765,8 +781,8 @@ function gambarApi(t, waktu) {
     ctx.globalAlpha = 0.9 * kedip;
     ctx.translate(x, y);
     ctx.rotate(rot);
-    ctx.drawImage(img, 0, 0, img.naturalWidth, img.naturalHeight * nyala,
-                  -PENDORONG_LEBAR / 2, 0, PENDORONG_LEBAR, tinggi);
+    ctx.drawImage(img, 0, sy, img.naturalWidth, tinggiSumber,
+                  -PENDORONG_LEBAR / 2, 0, PENDORONG_LEBAR, tinggiTampil);
     ctx.restore();
 }
 
@@ -945,6 +961,31 @@ function gambarError() {
     ctx.restore();
 }
 
+// Apakah posisi kapal berada di dalam layar (dengan margin)
+function kapalDiLayar() {
+    const sx = toSX(kapal.x), sy = toSY(kapal.y);
+    const margin = 120;
+    return sx > -margin && sx < canvas.width + margin &&
+           sy > -margin && sy < canvas.height + margin;
+}
+
+// Volume dan putar/jeda suara: hanya terdengar saat kapal bergerak dan terlihat
+function updateSuara() {
+    const aktif = thrs.filter(t => t.aktif).length;
+    const bisaBunyi = mode === 'uji' && kapal.hidup && aktif > 0 && kapal.v > 0.5 && kapalDiLayar();
+
+    if (!bisaBunyi) {
+        if (!sfxPendorong.paused) sfxPendorong.pause();
+        return;
+    }
+
+    const fraksi = clamp(kapal.v / JENIS_AKTIF.lurus, 0, 1);
+    const zoomFaktor = clamp(kamera.skala / SKALA_BANGUN, 0.25, 2.5);
+    sfxPendorong.volume = clamp(SFX_VOLUME_DASAR * fraksi * zoomFaktor, 0, 1);
+
+    if (sfxPendorong.paused) sfxPendorong.play().catch(() => {});
+}
+
 function gambar() {
     ctx.fillStyle = '#07080d';
     ctx.fillRect(0, 0, canvas.width, canvas.height);
@@ -990,6 +1031,7 @@ function loop(now) {
     });
 
     coba('gambar', gambar);
+    coba('suara', updateSuara);
     try { gambarError(); } catch (_) {}
 }
 
