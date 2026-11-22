@@ -42,10 +42,10 @@ const C = 16;
 const KW = 384, KH = 528, COLS = KW / C, ROWS = KH / C;   // 24 x 33 sel
 const PX = KW / 2, PY = KH / 2;                           // pusat kapal = pusat kerangka
 
-// CEK: posisi inti dalam satuan sel (ukuran 2×2 sel = 32×32 piksel)
+// CEK: posisi inti dalam satuan sel (2×2 sel = 32×32 piksel)
 const INTI = { i: 11, j: 24, w: 2, h: 2 };
 
-// CEK: kotak tempat pendorong utama (ukuran 2×3 sel), sesuaikan dengan deretan kotak di kerangka
+// CEK: kotak tempat pendorong utama (2×3 sel), sesuaikan dengan deretan kotak di kerangka
 const SLOT = [
     { i: 3,  j: 29, w: 2, h: 3 },
     { i: 7,  j: 29, w: 2, h: 3 },
@@ -54,13 +54,16 @@ const SLOT = [
     { i: 19, j: 29, w: 2, h: 3 }
 ];
 
-const BATAS_I = [-2, COLS + 1], BATAS_J = [-2, ROWS + 1];   // area boleh taruh sel
+const BATAS_I = [-2, COLS + 1], BATAS_J = [-2, ROWS + 1];
 const DEF = { utama: { w: 2, h: 3 }, sel: { w: 1, h: 1 } };
 const TOMBOL = [['utama', 'Utama'], ['sel', 'Sel'], ['hapus', 'Hapus'], ['ok', 'OK']];
 const DIR4 = [[1, 0], [-1, 0], [0, 1], [0, -1]];
 
+// Kamera
+const SKALA_BANGUN = 0.6;
+const ZOOM_MIN = 0.2, ZOOM_MAX = 3, ZOOM_LANGKAH = 1.25;
+
 // Gerak tanpa inersia
-const SKALA_BANGUN = 1.5;
 const VMAX = 200;        // px/s, kecepatan maju saat pendorong utama aktif
 const REM = 40;          // px/s², perlambatan saat mengerem
 const PUTAR = 2;         // rad/s, kecepatan belok langsung
@@ -71,15 +74,16 @@ const SEJAJAR = 0.2;     // rad, kapal mulai maju kalau sudah cukup menghadap tu
 // 2. STATUS
 // ==========================================
 const kamera = { x: 0, y: 0, skala: SKALA_BANGUN };
-let mode = 'bangun';           // 'bangun' atau 'uji'
-let hapusAktif = false;        // mode hapus (ketuk Hapus untuk nyala/mati)
+let mode = 'bangun';
+let hapusAktif = false;
 let seret = null;              // opsi yang sedang diangkat: { id, x, y }
 let rutaDraw = null;           // titik tujuan sementara saat seret di mode uji
 let ptr = null;
-let cells = new Map();         // key -> { i, j, tipe: 'rangka'|'inti'|'sel'|'thr', thr }
-let rangkaSet = new Set();     // sel kerangka asli (untuk memulihkan saat pendorong dihapus)
-let thrs = [];                 // daftar pendorong utama: { i, j, aktif, fp: [[i,j], ...] }
+let cells = new Map();
+let rangkaSet = new Set();
+let thrs = [];
 let terakhir = performance.now();
+let errorTerakhir = null;      // pesan error yang ditampilkan di layar
 
 let kapal = {
     x: 0, y: 0, th: 0, v: 0,
@@ -88,7 +92,25 @@ let kapal = {
 };
 
 // ==========================================
-// 3. UTILITAS
+// 3. PENGAMAN ERROR
+// ==========================================
+function catatError(lokasi, err) {
+    const pesan = err && err.message ? err.message : String(err);
+    errorTerakhir = `[${lokasi}] ${pesan}`;
+    console.error(err);
+}
+
+window.addEventListener('error', e => catatError('global', e.error || e.message));
+
+// Bungkus handler pointer supaya error di dalamnya tidak menghentikan halaman
+function aman(lokasi, fn) {
+    return e => {
+        try { fn(e); } catch (err) { catatError(lokasi, err); }
+    };
+}
+
+// ==========================================
+// 4. UTILITAS
 // ==========================================
 function kunci(i, j) { return i + ',' + j; }
 function clamp(v, a, b) { return Math.max(a, Math.min(b, v)); }
@@ -108,20 +130,18 @@ function posisi(e) {
     return { x: e.clientX - r.left, y: e.clientY - r.top };
 }
 
-// Layar -> sel kapal (kapal berada di titik 0,0 saat mode bangun)
 function layarKeKisi(sx, sy) {
     const wx = dariSX(sx), wy = dariSY(sy);
     return { i: Math.floor((wx + PX) / C), j: Math.floor((wy + PY) / C) };
 }
 
-// Pendorong 2×3 dijangkarkan di sel kiri atas, dihitung dari sel di bawah jari
 function anchorFor(id, i, j) {
     const d = DEF[id];
     return { i: i - Math.floor(d.w / 2), j: j - Math.floor(d.h / 2) };
 }
 
 // ==========================================
-// 4. BANGUN KAPAL
+// 5. BANGUN KAPAL
 // ==========================================
 function bacaMask() {
     const c = document.createElement('canvas');
@@ -164,8 +184,6 @@ function dalamSlot(i, j, w, h) {
     return SLOT.some(s => i >= s.i && j >= s.j && i + w <= s.i + s.w && j + h <= s.j + s.h);
 }
 
-// Sel: sel kosong di area boleh, bersisian dengan sel yang sudah ada
-// Pendorong: semua sel footprint masuk kotak SLOT dan tidak tertimpa sel/inti/pendorong lain
 function bolehTaruh(id, i, j) {
     if (id === 'sel') {
         if (i < BATAS_I[0] || i > BATAS_I[1] || j < BATAS_J[0] || j > BATAS_J[1]) return false;
@@ -202,7 +220,6 @@ function tempatkan(id, ai, aj) {
     return true;
 }
 
-// Hapus sel atau pendorong. Sel kerangka dan inti tidak bisa dihapus.
 function hapusDi(i, j) {
     const c = cells.get(kunci(i, j));
     if (!c) return;
@@ -220,9 +237,8 @@ function hapusDi(i, j) {
 }
 
 // ==========================================
-// 5. KONEKSI DAYA
+// 6. KONEKSI DAYA
 // ==========================================
-// Dari inti, sel yang bersisian ikut tersambung. Pendorong aktif kalau salah satu selnya tersambung.
 function hitungKoneksi() {
     const seen = new Set(), q = [];
     for (const [key, c] of cells) {
@@ -241,10 +257,8 @@ function hitungKoneksi() {
 }
 
 // ==========================================
-// 6. GERAK (tanpa inersia)
+// 7. GERAK (tanpa inersia)
 // ==========================================
-// Kapal menghadap tujuan dulu, lalu maju dengan kecepatan penuh,
-// lalu mengerem dengan perlambatan konstan dan berhenti di tujuan.
 function kendali(dt) {
     const k = kapal;
     k.gas = false;
@@ -262,12 +276,10 @@ function kendali(dt) {
         return;
     }
 
-    // Arah ke tujuan. Konvensi: maju = (sin th, -cos th)
     const hd = Math.atan2(dx, -dy);
     const err = sudutSelisih(hd, k.th);
     k.th += clamp(err, -PUTAR * dt, PUTAR * dt);
 
-    // Mulai mengerem saat jarak sisa sama dengan jarak henti
     if (!k.rem && k.v > 0 && jarak <= (k.v * k.v) / (2 * REM)) k.rem = true;
 
     if (k.rem) {
@@ -288,7 +300,7 @@ function kendali(dt) {
 }
 
 // ==========================================
-// 7. BILAH DAN TOMBOL
+// 8. BILAH, TOMBOL, ZOOM, DAN MODE
 // ==========================================
 function tombolBilah() {
     const w = 70, g = 6, n = TOMBOL.length;
@@ -299,6 +311,21 @@ function tombolBilah() {
 
 function tombolBuild() {
     return { id: 'build', label: 'BUILD', x: canvas.width - 86, y: 10, w: 76, h: 32 };
+}
+
+// Tombol zoom di sisi kanan layar, tampil di kedua mode
+function tombolZoomIn() {
+    return { id: 'zoomIn', label: '+', x: canvas.width - 54, y: canvas.height / 2 - 60, w: 44, h: 44 };
+}
+function tombolZoomOut() {
+    return { id: 'zoomOut', label: '−', x: canvas.width - 54, y: canvas.height / 2 + 10, w: 44, h: 44 };
+}
+
+function ubahZoom(arah) {
+    kamera.skala = clamp(
+        kamera.skala * (arah > 0 ? ZOOM_LANGKAH : 1 / ZOOM_LANGKAH),
+        ZOOM_MIN, ZOOM_MAX
+    );
 }
 
 function masukBangun() {
@@ -326,19 +353,22 @@ function konfirm() {
 }
 
 // ==========================================
-// 8. INPUT
+// 9. INPUT
 // ==========================================
-canvas.addEventListener('pointerdown', e => {
+canvas.addEventListener('pointerdown', aman('pointerdown', e => {
     e.preventDefault();
     const p = posisi(e);
     ptr = { sx: p.x, sy: p.y, lx: p.x, ly: p.y, moved: false, aksi: '', id: null };
+
+    // Tombol zoom selalu dicek lebih dulu, di mode apa pun
+    if (dalam(p, tombolZoomIn())) { ubahZoom(1); ptr.aksi = 'abaikan'; return; }
+    if (dalam(p, tombolZoomOut())) { ubahZoom(-1); ptr.aksi = 'abaikan'; return; }
 
     if (mode === 'bangun') {
         const b = tombolBilah().find(t => dalam(p, t));
         if (b) {
             ptr.id = b.id;
             if (b.id === 'utama' || b.id === 'sel') {
-                // Sentuh langsung mengangkat opsi, siap diseret
                 ptr.aksi = 'tarik';
                 seret = { id: b.id, x: p.x, y: p.y };
             } else {
@@ -357,9 +387,9 @@ canvas.addEventListener('pointerdown', e => {
             ptr.aksi = 'pan';
         }
     }
-});
+}));
 
-canvas.addEventListener('pointermove', e => {
+canvas.addEventListener('pointermove', aman('pointermove', e => {
     if (!ptr) return;
     e.preventDefault();
     const p = posisi(e);
@@ -375,22 +405,21 @@ canvas.addEventListener('pointermove', e => {
         kamera.y -= dy / kamera.skala;
     }
     ptr.lx = p.x; ptr.ly = p.y;
-});
+}));
 
-canvas.addEventListener('pointerup', e => {
+canvas.addEventListener('pointerup', aman('pointerup', e => {
     if (!ptr) return;
     const p = posisi(e);
     const bilahTop = canvas.height - 100;
 
     switch (ptr.aksi) {
         case 'tarik':
-            // Lepas di grid untuk menaruh satu objek. Lepas di bilah atau tidak valid = batal.
             if (seret && p.y < bilahTop) {
                 const q = layarKeKisi(p.x, p.y);
                 const a = anchorFor(seret.id, q.i, q.j);
                 tempatkan(seret.id, a.i, a.j);
             }
-            seret = null;   // opsi mati setelah dilepas
+            seret = null;
             break;
 
         case 'bilah':
@@ -416,13 +445,13 @@ canvas.addEventListener('pointerup', e => {
                 kapal.target = { x: rutaDraw.x, y: rutaDraw.y };
                 kapal.rem = false;
             } else {
-                kapal.target = null;   // ketuk tanpa seret: hentikan
+                kapal.target = null;
             }
             rutaDraw = null;
             break;
     }
     ptr = null;
-});
+}));
 
 canvas.addEventListener('pointercancel', () => {
     ptr = null;
@@ -431,7 +460,7 @@ canvas.addEventListener('pointercancel', () => {
 });
 
 // ==========================================
-// 9. GAMBAR
+// 10. GAMBAR
 // ==========================================
 function gambarKisi() {
     const s = C * kamera.skala;
@@ -467,7 +496,6 @@ function gambarKapal() {
         for (const t of thrs) ctx.drawImage(gbr.utama, t.i * C - PX, t.j * C - PY, 32, 48);
     }
 
-    // Api hanya saat maju, dari pendorong yang tersambung
     if (gbr.efek.complete && kapal.gas) {
         const w = gbr.efek.naturalWidth * 0.25, h = gbr.efek.naturalHeight * 0.25;
         for (const t of thrs) {
@@ -478,7 +506,6 @@ function gambarKapal() {
         }
     }
 
-    // Overlay bantu saat bangun
     if (mode === 'bangun') {
         ctx.lineWidth = 1 / kamera.skala;
         ctx.setLineDash([4, 3]);
@@ -493,7 +520,6 @@ function gambarKapal() {
     ctx.restore();
 }
 
-// Bayangan saat opsi diseret: grid hijau/merah sebesar objek, mengikuti jari
 function gambarSeret() {
     if (!seret) return;
     const bilahTop = canvas.height - 100;
@@ -520,7 +546,6 @@ function gambarSeret() {
         }
     }
 
-    // Opsi yang terangkat tepat di atas jari
     if (img.complete) {
         const iw = img.naturalWidth * 1.5, ih = img.naturalHeight * 1.5;
         ctx.globalAlpha = 0.9;
@@ -529,7 +554,6 @@ function gambarSeret() {
     }
 }
 
-// Garis putus-putus dari kapal ke tujuan akhir
 function gambarRute() {
     let tx, ty;
     if (rutaDraw) { tx = toSX(rutaDraw.x); ty = toSY(rutaDraw.y); }
@@ -559,7 +583,7 @@ function gambarTombolKotak(b, label, aktif) {
     ctx.fillRect(b.x, b.y, b.w, b.h);
     ctx.strokeRect(b.x, b.y, b.w, b.h);
     ctx.fillStyle = '#fde68a';
-    ctx.font = '11px monospace';
+    ctx.font = '14px monospace';
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
     ctx.fillText(label, b.x + b.w / 2, b.y + b.h / 2);
@@ -573,14 +597,30 @@ function gambarUI() {
         `Status: ${kapal.status}`,
         `Kecepatan: ${kapal.v.toFixed(0)} px/s`,
         `Heading: ${((kapal.th * 180 / Math.PI + 360) % 360).toFixed(0)}°`,
-        `Hapus: ${hapusAktif ? 'AKTIF' : 'mati'}`
+        `Hapus: ${hapusAktif ? 'AKTIF' : 'mati'}`,
+        `Zoom: ${kamera.skala.toFixed(2)}`
     ];
     ctx.save();
     ctx.fillStyle = '#fde68a';
-    ctx.font = '12px monospace';
+    ctx.font = '13px monospace';
     ctx.textAlign = 'left';
     ctx.textBaseline = 'top';
-    baris.forEach((t, i) => ctx.fillText(t, 10, 10 + i * 16));
+    baris.forEach((t, i) => ctx.fillText(t, 10, 10 + i * 17));
+    ctx.restore();
+}
+
+// Pesan error ditampilkan terus sampai error berikutnya atau sampai tidak ada error lagi
+function gambarError() {
+    if (!errorTerakhir) return;
+    ctx.save();
+    ctx.fillStyle = 'rgba(0,0,0,0.85)';
+    ctx.fillRect(0, canvas.height / 2 - 40, canvas.width, 80);
+    ctx.fillStyle = '#f87171';
+    ctx.font = '13px monospace';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText('ERROR:', canvas.width / 2, canvas.height / 2 - 18);
+    ctx.fillText(errorTerakhir, canvas.width / 2, canvas.height / 2 + 6);
     ctx.restore();
 }
 
@@ -600,24 +640,34 @@ function gambar() {
     } else {
         gambarTombolKotak(tombolBuild(), 'BUILD', false);
     }
+
+    gambarTombolKotak(tombolZoomIn(), '+', false);
+    gambarTombolKotak(tombolZoomOut(), '−', false);
     gambarUI();
+    gambarError();
 }
 
 // ==========================================
-// 10. LOOP
+// 11. LOOP
 // ==========================================
+// Semua isi loop dibungkus try/catch. requestAnimationFrame selalu dipanggil,
+// jadi loop tidak berhenti walaupun ada error. Pesan error tampil di layar.
 function loop(now) {
-    let dt = (now - terakhir) / 1000;
-    terakhir = now;
-    if (dt > 0.05) dt = 0.05;
+    try {
+        let dt = (now - terakhir) / 1000;
+        terakhir = now;
+        if (dt > 0.05) dt = 0.05;
 
-    hitungKoneksi();
-    if (mode === 'uji') {
-        kendali(dt);
-    } else {
-        kapal.v = 0; kapal.target = null; kapal.gas = false; kapal.status = '-';
+        hitungKoneksi();
+        if (mode === 'uji') {
+            kendali(dt);
+        } else {
+            kapal.v = 0; kapal.target = null; kapal.gas = false; kapal.status = '-';
+        }
+        gambar();
+    } catch (err) {
+        catatError('loop', err);
     }
-    gambar();
     requestAnimationFrame(loop);
 }
 
@@ -626,7 +676,11 @@ function mulai() {
         setTimeout(mulai, 100);
         return;
     }
-    initKapal();
+    try {
+        initKapal();
+    } catch (err) {
+        catatError('initKapal', err);
+    }
     requestAnimationFrame(loop);
 }
 mulai();
