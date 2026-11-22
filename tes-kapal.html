@@ -91,7 +91,7 @@ const TOL_SIMPLIF = 16;         // px, goyangan seretan di bawah ini dianggap lu
 const SEG_WINDOW = 8;           // segmen yang dicari ke depan untuk posisi kapal di rute
 const JALUR_STEP = 6;           // px layar, jarak antar titik saat menggambar
 
-// Koreksi bayangan saat dekat
+// Koreksi bayangan saat dekat (tidak dipakai lagi, disisakan agar konstanta lama tetap ada)
 const KOREKSI_JARAK = 200;      // px
 const KOREKSI_SUDUT = 0.44;     // rad
 
@@ -117,7 +117,7 @@ let errorTerakhir = null;
 
 let kapal = {
     x: 0, y: 0, th: 0, v: 0, nyala: 0,
-    target: null,               // bayangan akhir: { x, y, th }, sama dengan titik terakhir rute
+    target: null,               // bayangan akhir: salinan { x, y, th } dari titik terakhir rute
     rute: [],                   // rute asli yang sudah disederhanakan, TIDAK pernah diubah setelah dikunci
     seg: 0,                     // indeks segmen rute tempat kapal berada (hanya maju)
     hidup: false, status: '-', tersambung: 0, gas: false
@@ -427,15 +427,16 @@ function sedangGambar() {
 }
 
 // Rute dikunci saat jari dilepas: disederhanakan, lalu menjadi rute asli.
+// Bayangan akhir disalin, supaya tidak pernah berbagi objek dengan rute.
 function kunciJalur() {
     let list = sederhanakan(previewList());
     if (list.length < 2) return;
     const last = list[list.length - 1];
     const prev = list[list.length - 2];
-    last.th = arahKe(last.x - prev.x, last.y - prev.y);
+    const th = arahKe(last.x - prev.x, last.y - prev.y);
     kapal.rute = list;
     kapal.seg = 0;
-    kapal.target = last;
+    kapal.target = { x: last.x, y: last.y, th };
 }
 
 function resetGerak() {
@@ -476,6 +477,7 @@ function kendali(dt) {
         return;
     }
 
+    // Bayangan tidak diubah lagi. Rute dan bayangan hanya dibaca.
     const end = k.target;
     const dEnd = dist(k, end);
     const om = omegaMaks(aktif);
@@ -484,11 +486,8 @@ function kendali(dt) {
     const sisa = proj ? sisaRute(proj) : 0;
     const ikutiJalur = !!proj && sisa > LOOK_JARAK;
 
-    // Dekat bayangan: koreksi arah lembut, lalu berhenti hanya kalau posisi, arah, dan kecepatan sudah cocok
+    // Berhenti hanya kalau posisi, arah, dan kecepatan sudah cocok dengan bayangan
     if (!ikutiJalur) {
-        if (dEnd < KOREKSI_JARAK && Math.abs(sudutSelisih(end.th, k.th)) < KOREKSI_SUDUT) {
-            end.th -= sudutSelisih(end.th, k.th) * Math.min(1, dt * 2);
-        }
         if (dEnd <= ARRIVE_POS && k.v < ARRIVE_V && Math.abs(sudutSelisih(end.th, k.th)) <= ARRIVE_TH) {
             resetGerak();
             return;
