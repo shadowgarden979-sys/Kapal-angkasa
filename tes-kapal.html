@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-<title>Tes Kapal - Kecepatan per Jenis</title>
+<title>Tes Kapal - Final</title>
 <style>
 body,html{margin:0;padding:0;width:100%;height:100%;overflow:hidden;background:#07080d;font-family:monospace}
 canvas{display:block;touch-action:none}
@@ -67,26 +67,26 @@ const KG_PER_SEL = 1000;
 const F_THR = 6.4e6;
 const ACEL_MAKS = 2;            // m/s², batas tubuh awak (kesan berat)
 const SPOOL = 2;                // detik, daya naik dari 0 ke penuh
-const REM = 0.5;                 // m/s², perlambatan
+const REM = 2;                  // m/s², perlambatan (diatur manual)
 
-// Gaya samping maksimum untuk belok (dipakai rumus belok per jenis)
+// Gaya samping maksimum untuk belok
 const A_LATERAL = 2;            // m/s²
 
-// Data kecepatan per jenis (hanya KRUISER yang dijalankan sekarang)
+// Data kecepatan per jenis (hanya kruiser yang dijalankan)
 const JENIS = {
-    fregat:   { sel: 60,    lurus: 60, omega: 0.10, aktif: false },
-    destroyer:{ sel: 120,   lurus: 50, omega: 0.07, aktif: false },
-    kruiser:  { sel: 232,   lurus: 40, omega: 0.05, aktif: true  },
-    perang:   { sel: 600,   lurus: 30, omega: 0.03, aktif: false },
-    raksasa:  { sel: 12965, lurus: 15, omega: 0.01, aktif: false }
+    fregat:    { sel: 60,    lurus: 60, omega: 0.10, aktif: false },
+    destroyer: { sel: 120,   lurus: 50, omega: 0.07, aktif: false },
+    kruiser:   { sel: 232,   lurus: 40, omega: 0.05, aktif: true  },
+    perang:    { sel: 600,   lurus: 30, omega: 0.03, aktif: false },
+    raksasa:   { sel: 12965, lurus: 15, omega: 0.01, aktif: false }
 };
 const JENIS_AKTIF = JENIS.kruiser;
 
 // Faktor kecepatan belok berdasarkan besar sudut belokan
 const FAKTOR_SUDUT = [
-    { maks: 0.30, f: 0.9 },   // di bawah ~17°: 90% lurus
-    { maks: 0.79, f: 0.6 },   // sampai ~45°: 60% lurus
-    { maks: Infinity, f: 0.45 } // 90° ke atas: 45% lurus
+    { maks: 0.30, f: 0.9 },
+    { maks: 0.79, f: 0.6 },
+    { maks: Infinity, f: 0.45 }
 ];
 
 // Pita jalur
@@ -332,11 +332,9 @@ function sederhanakan(pts) {
     return out;
 }
 
-// Kecepatan belok untuk jenis aktif: min(belok maks dari gaya samping, lurus × faktor sudut)
 function kecepatanBelok(besarSudut) {
     const j = JENIS_AKTIF;
-    const omega = j.omega;
-    const belokMaks = A_LATERAL / omega;                 // px/s, dari batas gaya samping
+    const belokMaks = A_LATERAL / j.omega;
     let f = FAKTOR_SUDUT[FAKTOR_SUDUT.length - 1].f;
     for (const t of FAKTOR_SUDUT) {
         if (besarSudut <= t.maks) { f = t.f; break; }
@@ -344,12 +342,10 @@ function kecepatanBelok(besarSudut) {
     return Math.min(belokMaks, j.lurus * f);
 }
 
-// Jari-jari lengkung untuk kecepatan belok tertentu: R = v / ω
 function jariBelok(v) {
     return v / JENIS_AKTIF.omega;
 }
 
-// Busur pelebaran di satu titik sudut, R sesuai kecepatan belok untuk sudut itu
 function busurTikungan(A, P, B) {
     const d1 = { x: A.x - P.x, y: A.y - P.y };
     const d2 = { x: B.x - P.x, y: B.y - P.y };
@@ -513,23 +509,34 @@ function kendali(dt) {
 
     const end = k.target;
     const proj = updateSeg();
-    const sisa = proj ? sisaRute(proj) : 0;
-    const ikutiJalur = !!proj && sisa > LOOK_JARAK;
-    const sisaJarak = proj ? sisa : dist(k, end);
 
-    if (k.v <= 0.01 && !ikutiJalur) { resetGerak(); return; }
+    // Sisa jarak sepanjang rute ke bayangan (atau garis lurus bila rute sudah habis)
+    const sisaJarak = proj ? sisaRute(proj) : dist(k, end);
+    const ikutiJalur = !!proj && sisaJarak > LOOK_JARAK;
 
-    const masukRem = !ikutiJalur || sisaJarak <= jarakHenti(k.v);
-    if (masukRem && !ikutiJalur) {
+    // Pengereman: mulai saat sisa jarak <= jarak henti, berlaku di semua kondisi
+    const perluRem = sisaJarak <= jarakHenti(k.v);
+
+    if (perluRem) {
         k.v = Math.max(0, k.v - REM * dt);
         k.status = 'rem';
+        k.koreksi = 0;
+        if (proj) {
+            const tp = titikDepan(proj, LOOK_JARAK);
+            const hdRem = arahKe(tp.x - k.x, tp.y - k.y);
+            const errRem = sudutSelisih(hdRem, k.th);
+            if (k.v > 0.5) {
+                const maksRem = JENIS_AKTIF.omega * dt;
+                k.th += clamp(errRem, -maksRem, maksRem);
+            }
+        }
         k.x += Math.sin(k.th) * k.v * dt;
         k.y += -Math.cos(k.th) * k.v * dt;
-        k.koreksi = 0;
         if (k.v <= 0.01) resetGerak();
         return;
     }
 
+    // Arah kemudi
     let hd;
     if (ikutiJalur) {
         const tp = titikDepan(proj, LOOK_JARAK);
@@ -538,6 +545,7 @@ function kendali(dt) {
         hd = arahKe(end.x - k.x, end.y - k.y);
     }
 
+    // Koreksi dari tepi pita
     k.koreksi = 0;
     if (ikutiJalur) {
         const sim = simpanganDariRute(proj);
@@ -556,14 +564,14 @@ function kendali(dt) {
     const s = clamp(k.nyala / SPOOL, 0, 1);
     const daya = s * s * (3 - 2 * s);
 
-    // Kecepatan target: lurus saat sudah searah, belok saat selisih arah besar
+    // Kecepatan target: lurus saat searah, belok saat selisih besar
     const besarErr = Math.abs(err);
     const vTarget = besarErr > AMBANG_BELOK
         ? kecepatanBelok(besarErr)
         : JENIS_AKTIF.lurus;
 
-    let vAkhir = vTarget;
-    if (!ikutiJalur) vAkhir = Math.min(vAkhir, Math.sqrt(2 * REM * Math.max(0, sisaJarak)));
+    // Selalu dibatasi agar bisa direm tepat di bayangan
+    const vAkhir = Math.min(vTarget, Math.sqrt(2 * REM * Math.max(0, sisaJarak)));
 
     if (k.v < vAkhir) {
         k.v = Math.min(vAkhir, k.v + accelMaks(aktif) * daya * dt);
@@ -870,6 +878,7 @@ function gambarUI() {
         `Massa: ${cells.size} ton`,
         `Utama aktif: ${aktif}/${thrs.length}`,
         `Akselerasi maks: ${accelMaks(aktif).toFixed(1)} m/s²`,
+        `Rem: ${REM} m/s²`,
         `Lurus maks: ${JENIS_AKTIF.lurus} px/s`,
         `Laju putar: ${JENIS_AKTIF.omega} rad/s`,
         `Jari-jari belok: ${jariBelok(JENIS_AKTIF.lurus).toFixed(0)} px`,
