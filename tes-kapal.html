@@ -313,7 +313,6 @@ function tombolBuild() {
     return { id: 'build', label: 'BUILD', x: canvas.width - 86, y: 10, w: 76, h: 32 };
 }
 
-// Tombol zoom di sisi kanan layar, tampil di kedua mode
 function tombolZoomIn() {
     return { id: 'zoomIn', label: '+', x: canvas.width - 54, y: canvas.height / 2 - 60, w: 44, h: 44 };
 }
@@ -360,7 +359,6 @@ canvas.addEventListener('pointerdown', aman('pointerdown', e => {
     const p = posisi(e);
     ptr = { sx: p.x, sy: p.y, lx: p.x, ly: p.y, moved: false, aksi: '', id: null };
 
-    // Tombol zoom selalu dicek lebih dulu, di mode apa pun
     if (dalam(p, tombolZoomIn())) { ubahZoom(1); ptr.aksi = 'abaikan'; return; }
     if (dalam(p, tombolZoomOut())) { ubahZoom(-1); ptr.aksi = 'abaikan'; return; }
 
@@ -609,7 +607,6 @@ function gambarUI() {
     ctx.restore();
 }
 
-// Pesan error ditampilkan terus sampai error berikutnya atau sampai tidak ada error lagi
 function gambarError() {
     if (!errorTerakhir) return;
     ctx.save();
@@ -650,24 +647,29 @@ function gambar() {
 // ==========================================
 // 11. LOOP
 // ==========================================
-// Semua isi loop dibungkus try/catch. requestAnimationFrame selalu dipanggil,
-// jadi loop tidak berhenti walaupun ada error. Pesan error tampil di layar.
+// Logika dan gambar dipisah, masing-masing punya try/catch sendiri.
+// Error di logika tidak menghentikan gambar, dan requestAnimationFrame selalu dipanggil.
 function loop(now) {
-    try {
-        let dt = (now - terakhir) / 1000;
-        terakhir = now;
-        if (dt > 0.05) dt = 0.05;
+    let dt = (now - terakhir) / 1000;
+    terakhir = now;
+    if (dt > 0.05) dt = 0.05;
 
+    try {
         hitungKoneksi();
-        if (mode === 'uji') {
-            kendali(dt);
-        } else {
+        if (mode === 'uji') kendali(dt);
+        else {
             kapal.v = 0; kapal.target = null; kapal.gas = false; kapal.status = '-';
         }
+    } catch (err) {
+        catatError('logika', err);
+    }
+
+    try {
         gambar();
     } catch (err) {
-        catatError('loop', err);
+        catatError('gambar', err);
     }
+
     requestAnimationFrame(loop);
 }
 
