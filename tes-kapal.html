@@ -42,10 +42,7 @@ const C = 16;
 const KW = 384, KH = 528, COLS = KW / C, ROWS = KH / C;
 const PX = KW / 2, PY = KH / 2;
 
-// CEK: posisi inti dalam satuan sel (2×2 sel = 32×32 piksel)
 const INTI = { i: 11, j: 24, w: 2, h: 2 };
-
-// CEK: kotak tempat pendorong utama (2×3 sel)
 const SLOT = [
     { i: 3,  j: 29, w: 2, h: 3 },
     { i: 7,  j: 29, w: 2, h: 3 },
@@ -53,8 +50,6 @@ const SLOT = [
     { i: 15, j: 29, w: 2, h: 3 },
     { i: 19, j: 29, w: 2, h: 3 }
 ];
-
-// Batas bangun kruiser: 40×40 sel, berpusat di kerangka
 const BATAS_I = [-8, 31], BATAS_J = [-4, 35];
 const DEF = { utama: { w: 2, h: 3 }, sel: { w: 1, h: 1 } };
 const TOMBOL = [['utama', 'Utama'], ['sel', 'Sel'], ['hapus', 'Hapus'], ['ok', 'OK']];
@@ -63,41 +58,35 @@ const DIR4 = [[1, 0], [-1, 0], [0, 1], [0, -1]];
 const SKALA_BANGUN = 0.6;
 const ZOOM_MIN = 0.2, ZOOM_MAX = 3, ZOOM_LANGKAH = 1.25;
 
-// Fisika (1 px = 1 m, 1 sel = 1 ton)
 const KG_PER_SEL = 1000;
-const F_THR = 6.4e6;            // N per pendorong utama (acuan)
-const ACEL_MAKS = 20;           // m/s², batas tubuh awak
-const SPOOL = 2;                // detik, daya naik dari 0 ke penuh
-const VMAX = 200;               // px/s = m/s
-const REM = 40;                 // m/s², perlambatan
+const F_THR = 6.4e6;
+const ACEL_MAKS = 20;
+const SPOOL = 2;
+const VMAX = 200;
+const REM = 40;
 
-// Berhenti di bayangan
-const ARRIVE_POS = 16;          // px
-const ARRIVE_TH = 0.17;         // rad (sekitar 10 derajat)
-const ARRIVE_V = 2;             // px/s
+// --- PERBAIKAN BUG 1: Toleransi berhenti dilebarkan ---
+const ARRIVE_POS = 32;          // px (sebelumnya 16)
+const ARRIVE_TH = 0.3;          // rad (sebelumnya 0.17, dibesarkan agar mudah berhenti)
+const ARRIVE_V = 2;
 
-// Belok
-const AMBANG_BELOK = 0.3;       // rad (sekitar 17 derajat), selisih di bawah ini diabaikan
-const TIKUNGAN_MAKS = 400;      // px, jarak tikungan yang diperhitungkan
-const OMEGA_REF = 0.4;          // rad/s, laju putar acuan kruiser
+const AMBANG_BELOK = 0.3;
+const TIKUNGAN_MAKS = 400;
+const OMEGA_REF = 0.4;
 const PENDORONG_REF = 5;
 const SEL_REF = 232;
 const BELOK_MIN = 0.3;
-const BLEND_JARAK = 160;        // px, arah bayangan mulai ikut memengaruhi saat dekat
+const BLEND_JARAK = 160;
 
-// Rute
-const LOOK_JARAK = 300;         // px, titik kemudi di depan kapal sepanjang rute asli
-const TOL_SIMPLIF = 16;         // px, goyangan seretan di bawah ini dianggap lurus
-const SEG_WINDOW = 8;           // segmen yang dicari ke depan untuk posisi kapal di rute
-const JALUR_STEP = 6;           // px layar, jarak antar titik saat menggambar
+const LOOK_JARAK = 300;
+const TOL_SIMPLIF = 16;
+const SEG_WINDOW = 8;
+const JALUR_STEP = 6;
 
-// Koreksi bayangan saat dekat (tidak dipakai lagi, disisakan agar konstanta lama tetap ada)
-const KOREKSI_JARAK = 200;      // px
-const KOREKSI_SUDUT = 0.44;     // rad
+const KOREKSI_JARAK = 200;
 
-// Interaksi
-const RADIUS_SENTUH_KAPAL = 80; // px layar
-const UJUNG_SENTUH = 90;        // px layar, area sentuh titik akhir rute
+const RADIUS_SENTUH_KAPAL = 80;
+const UJUNG_SENTUH = 90;
 
 // ==========================================
 // 2. STATUS
@@ -117,9 +106,9 @@ let errorTerakhir = null;
 
 let kapal = {
     x: 0, y: 0, th: 0, v: 0, nyala: 0,
-    target: null,               // bayangan akhir: salinan { x, y, th } dari titik terakhir rute
-    rute: [],                   // rute asli yang sudah disederhanakan, TIDAK pernah diubah setelah dikunci
-    seg: 0,                     // indeks segmen rute tempat kapal berada (hanya maju)
+    target: null,
+    rute: [],
+    seg: 0,
     hidup: false, status: '-', tersambung: 0, gas: false
 };
 
@@ -135,20 +124,15 @@ function catatError(lokasi, err) {
         console.error(err);
     }
 }
-
 window.addEventListener('error', e => catatError('global', e.error || e.message));
 window.addEventListener('unhandledrejection', e => catatError('promise', e.reason));
 
 function aman(lokasi, fn) {
-    return e => {
-        try { fn(e); } catch (err) { catatError(lokasi, err); }
-    };
+    return e => { try { fn(e); } catch (err) { catatError(lokasi, err); } };
 }
-
 function coba(nama, fn) {
     try { fn(); } catch (err) { catatError(nama, err); }
 }
-
 function siapGambar(img) {
     return !!img && img.complete && img.naturalWidth > 0;
 }
@@ -174,18 +158,14 @@ function posisi(e) {
     const r = canvas.getBoundingClientRect();
     return { x: e.clientX - r.left, y: e.clientY - r.top };
 }
-
 function layarKeKisi(sx, sy) {
     const wx = dariSX(sx), wy = dariSY(sy);
     return { i: Math.floor((wx + PX) / C), j: Math.floor((wy + PY) / C) };
 }
-
 function anchorFor(id, i, j) {
     const d = DEF[id];
     return { i: i - Math.floor(d.w / 2), j: j - Math.floor(d.h / 2) };
 }
-
-// Arah dunia dari selisih posisi: maju = (sin th, -cos th)
 function arahKe(dx, dy) { return Math.atan2(dx, -dy); }
 
 // ==========================================
@@ -307,10 +287,6 @@ function hitungKoneksi() {
 // ==========================================
 // 7. RUTE
 // ==========================================
-// Rute asli disimpan sekali saat dikunci, lalu tidak pernah diubah.
-// Kapal hanya membaca rute ini dan menyimpan indeks segmen tempatnya berada.
-
-// Jarak titik p ke segmen a-b
 function jarakKeSegmen(p, a, b) {
     const dx = b.x - a.x, dy = b.y - a.y;
     const L2 = dx * dx + dy * dy;
@@ -319,8 +295,6 @@ function jarakKeSegmen(p, a, b) {
     return Math.hypot(p.x - (a.x + dx * t), p.y - (a.y + dy * t));
 }
 
-// Penyederhanaan: titik yang masih berada dalam TOL_SIMPLIF dari garis lurus dibuang.
-// Titik sudut yang benar-benar membelok tetap disimpan.
 function sederhanakan(pts) {
     if (pts.length <= 2) return pts.map(p => ({ x: p.x, y: p.y }));
     const out = [{ x: pts[0].x, y: pts[0].y }];
@@ -340,8 +314,6 @@ function sederhanakan(pts) {
     return out;
 }
 
-// Posisi kapal pada rute: titik terdekat di segmen fromSeg sampai fromSeg + SEG_WINDOW.
-// Fungsi ini tidak mengubah state, jadi aman dipakai saat menggambar.
 function proyeksiDariSeg(fromSeg) {
     const r = kapal.rute;
     if (r.length < 2) return null;
@@ -360,14 +332,12 @@ function proyeksiDariSeg(fromSeg) {
     return best;
 }
 
-// Dipanggil sekali per frame di logika. Indeks segmen hanya boleh maju.
 function updateSeg() {
     const p = proyeksiDariSeg(kapal.seg);
     if (p) kapal.seg = p.seg;
     return p;
 }
 
-// Bagian rute yang tampil: dari posisi proyeksi kapal sampai bayangan, rute asli tidak berubah
 function sisaRuteDepan() {
     const r = kapal.rute;
     if (r.length < 2) return [];
@@ -376,7 +346,6 @@ function sisaRuteDepan() {
     return [{ x: p.x, y: p.y }, ...r.slice(p.seg + 1)];
 }
 
-// Panjang sisa rute dari proyeksi kapal sampai bayangan
 function sisaRute(p) {
     const r = kapal.rute;
     let s = dist(p, r[p.seg + 1]);
@@ -384,7 +353,6 @@ function sisaRute(p) {
     return s;
 }
 
-// Titik kemudi: berjarak jarak dari proyeksi kapal sepanjang rute asli
 function titikDepan(p, jarak) {
     const r = kapal.rute;
     let prev = { x: p.x, y: p.y }, acc = 0;
@@ -400,7 +368,6 @@ function titikDepan(p, jarak) {
     return r[r.length - 1];
 }
 
-// Tikungan nyata di depan, dihitung dari rute asli saja
 function cariTikungan(p) {
     const r = kapal.rute;
     let arc = dist(p, r[p.seg + 1]);
@@ -426,17 +393,17 @@ function sedangGambar() {
     return ptr && ptr.moved && (ptr.aksi === 'kapal' || ptr.aksi === 'sambung') && draftPts.length > 0;
 }
 
-// Rute dikunci saat jari dilepas: disederhanakan, lalu menjadi rute asli.
-// Bayangan akhir disalin, supaya tidak pernah berbagi objek dengan rute.
+// --- PERBAIKAN BUG 4: DEEP COPY SAAT KUNCI JALUR ---
 function kunciJalur() {
     let list = sederhanakan(previewList());
     if (list.length < 2) return;
     const last = list[list.length - 1];
     const prev = list[list.length - 2];
-    const th = arahKe(last.x - prev.x, last.y - prev.y);
+    last.th = arahKe(last.x - prev.x, last.y - prev.y);
     kapal.rute = list;
     kapal.seg = 0;
-    kapal.target = { x: last.x, y: last.y, th };
+    // Deep copy agar objek target tidak memodifikasi array rute
+    kapal.target = { x: last.x, y: last.y, th: last.th };
 }
 
 function resetGerak() {
@@ -451,33 +418,18 @@ function resetGerak() {
 // ==========================================
 // 8. GERAK
 // ==========================================
-function massaKapal() {
-    return Math.max(1, cells.size) * KG_PER_SEL;
-}
-
-function accelMaks(aktif) {
-    return Math.min(aktif * F_THR / massaKapal(), ACEL_MAKS);
-}
-
-function omegaMaks(aktif) {
-    return OMEGA_REF * (aktif / PENDORONG_REF) * Math.sqrt(SEL_REF / Math.max(1, cells.size));
-}
+function massaKapal() { return Math.max(1, cells.size) * KG_PER_SEL; }
+function accelMaks(aktif) { return Math.min(aktif * F_THR / massaKapal(), ACEL_MAKS); }
+function omegaMaks(aktif) { return OMEGA_REF * (aktif / PENDORONG_REF) * Math.sqrt(SEL_REF / Math.max(1, cells.size)); }
 
 function kendali(dt) {
     const k = kapal;
     k.gas = false;
 
     const aktif = thrs.filter(t => t.aktif).length;
-    if (aktif === 0) {
-        resetGerak();
-        return;
-    }
-    if (!k.target) {
-        k.v = 0; k.nyala = 0; k.status = 'diam';
-        return;
-    }
+    if (aktif === 0) { resetGerak(); return; }
+    if (!k.target) { k.v = 0; k.nyala = 0; k.status = 'diam'; return; }
 
-    // Bayangan tidak diubah lagi. Rute dan bayangan hanya dibaca.
     const end = k.target;
     const dEnd = dist(k, end);
     const om = omegaMaks(aktif);
@@ -486,7 +438,8 @@ function kendali(dt) {
     const sisa = proj ? sisaRute(proj) : 0;
     const ikutiJalur = !!proj && sisa > LOOK_JARAK;
 
-    // Berhenti hanya kalau posisi, arah, dan kecepatan sudah cocok dengan bayangan
+    // --- PERBAIKAN BUG 2: Hapus pemutaran end.th ---
+    // Cek kondisi berhenti
     if (!ikutiJalur) {
         if (dEnd <= ARRIVE_POS && k.v < ARRIVE_V && Math.abs(sudutSelisih(end.th, k.th)) <= ARRIVE_TH) {
             resetGerak();
@@ -494,11 +447,11 @@ function kendali(dt) {
         }
     }
 
-    // Arah kemudi
     let hd, tk = null;
     if (ikutiJalur) {
         tk = cariTikungan(proj);
-        if (tk && tk.arc <= LOOK_JARAK) {
+        // --- PERBAIKAN BUG 3: Hanya aim tikungan jika sudah dekat ---
+        if (tk && tk.arc <= 60) { 
             hd = tk.out;
         } else {
             const tp = titikDepan(proj, LOOK_JARAK);
@@ -510,27 +463,28 @@ function kendali(dt) {
         hd = hdPos + sudutSelisih(end.th, hdPos) * w;
     }
 
-    // Selisih kecil diabaikan di jalur lurus. Belok hanya untuk tikungan nyata atau selisih besar.
     const err = sudutSelisih(hd, k.th);
-    const wajibBelok = !ikutiJalur || (tk && tk.arc <= LOOK_JARAK) || Math.abs(err) > AMBANG_BELOK;
+    const wajibBelok = !ikutiJalur || (tk && tk.arc <= 60) || Math.abs(err) > AMBANG_BELOK;
     if (wajibBelok) {
         const f = clamp(Math.abs(err) / AMBANG_BELOK, 0.3, 1);
         const maks = om * f * dt;
         k.th += clamp(err, -maks, maks);
     }
 
-    // Daya naik halus
     k.nyala += dt;
     const s = clamp(k.nyala / SPOOL, 0, 1);
     const daya = s * s * (3 - 2 * s);
 
-    // Batas kecepatan: pengereman ke bayangan, tikungan nyata, dan sudut hadap
     const jarakRem = ikutiJalur ? sisa : dEnd;
     let vTarget = Math.min(VMAX, Math.sqrt(2 * REM * Math.max(0, jarakRem)));
+    
+    // --- PERBAIKAN BUG 1: Paksa pengereman ekstra saat mendekat ---
+    if (!ikutiJalur && dEnd < KOREKSI_JARAK) {
+        vTarget = Math.min(vTarget, dEnd * 1.2); 
+    }
+
     if (tk) {
-        vTarget = Math.min(vTarget,
-            om * Math.max(tk.arc, 1) * 0.5,
-            Math.sqrt(2 * REM * Math.max(0, tk.arc)));
+        vTarget = Math.min(vTarget, om * Math.max(tk.arc, 1) * 0.5, Math.sqrt(2 * REM * Math.max(0, tk.arc)));
     }
     vTarget = Math.min(vTarget, VMAX * clamp(Math.cos(err), BELOK_MIN, 1));
 
@@ -544,7 +498,6 @@ function kendali(dt) {
     k.gas = k.v > 0.5;
     k.status = (ikutiJalur && Math.abs(err) > AMBANG_BELOK) ? 'belok' : 'maju';
 
-    // Kapal hanya maju, tidak pernah mundur
     k.x += Math.sin(k.th) * k.v * dt;
     k.y += -Math.cos(k.th) * k.v * dt;
 }
@@ -558,49 +511,25 @@ function tombolBilah() {
     const x0 = (canvas.width - total) / 2, y = canvas.height - 100;
     return TOMBOL.map(([id, label], k) => ({ id, label, x: x0 + k * (w + g), y, w, h: 44 }));
 }
-
-function tombolBuild() {
-    return { id: 'build', label: 'BUILD', x: canvas.width - 86, y: 10, w: 76, h: 32 };
-}
-
-function tombolZoomIn() {
-    return { id: 'zoomIn', label: '+', x: canvas.width - 54, y: canvas.height / 2 - 60, w: 44, h: 44 };
-}
-function tombolZoomOut() {
-    return { id: 'zoomOut', label: '−', x: canvas.width - 54, y: canvas.height / 2 + 10, w: 44, h: 44 };
-}
+function tombolBuild() { return { id: 'build', label: 'BUILD', x: canvas.width - 86, y: 10, w: 76, h: 32 }; }
+function tombolZoomIn() { return { id: 'zoomIn', label: '+', x: canvas.width - 54, y: canvas.height / 2 - 60, w: 44, h: 44 }; }
+function tombolZoomOut() { return { id: 'zoomOut', label: '−', x: canvas.width - 54, y: canvas.height / 2 + 10, w: 44, h: 44 }; }
 
 function ubahZoom(arah) {
-    kamera.skala = clamp(
-        kamera.skala * (arah > 0 ? ZOOM_LANGKAH : 1 / ZOOM_LANGKAH),
-        ZOOM_MIN, ZOOM_MAX
-    );
+    kamera.skala = clamp(kamera.skala * (arah > 0 ? ZOOM_LANGKAH : 1 / ZOOM_LANGKAH), ZOOM_MIN, ZOOM_MAX);
 }
 
 function masukBangun() {
-    mode = 'bangun';
-    kapal.hidup = false;
-    resetGerak();
-    kapal.x = 0; kapal.y = 0;
-    kapal.th = 0;
-    kamera.x = 0; kamera.y = 0;
-    kamera.skala = SKALA_BANGUN;
-    hapusAktif = false;
-    seret = null;
-    pilihKapal = false;
-    draftPts = [];
+    mode = 'bangun'; kapal.hidup = false; resetGerak();
+    kapal.x = 0; kapal.y = 0; kapal.th = 0;
+    kamera.x = 0; kamera.y = 0; kamera.skala = SKALA_BANGUN;
+    hapusAktif = false; seret = null; pilihKapal = false; draftPts = [];
 }
 
 function konfirm() {
-    mode = 'uji';
-    kapal.hidup = true;
-    kamera.skala = 1;
-    kamera.x = kapal.x;
-    kamera.y = kapal.y;
-    hapusAktif = false;
-    seret = null;
-    pilihKapal = false;
-    draftPts = [];
+    mode = 'uji'; kapal.hidup = true;
+    kamera.skala = 1; kamera.x = kapal.x; kamera.y = kapal.y;
+    hapusAktif = false; seret = null; pilihKapal = false; draftPts = [];
 }
 
 // ==========================================
@@ -619,31 +548,21 @@ canvas.addEventListener('pointerdown', aman('pointerdown', e => {
         if (b) {
             ptr.id = b.id;
             if (b.id === 'utama' || b.id === 'sel') {
-                ptr.aksi = 'tarik';
-                seret = { id: b.id, x: p.x, y: p.y };
-            } else {
-                ptr.aksi = 'bilah';
-            }
+                ptr.aksi = 'tarik'; seret = { id: b.id, x: p.x, y: p.y };
+            } else ptr.aksi = 'bilah';
             return;
         }
-        ptr.aksi = 'grid';
-        return;
+        ptr.aksi = 'grid'; return;
     }
 
     if (dalam(p, tombolBuild())) { ptr.aksi = 'build'; return; }
 
-    // Titik akhir rute: seret untuk meneruskan rute
     if (kapal.target && Math.hypot(p.x - toSX(kapal.target.x), p.y - toSY(kapal.target.y)) < UJUNG_SENTUH) {
-        ptr.aksi = 'sambung';
-        draftPts = [{ x: kapal.target.x, y: kapal.target.y }];
-        return;
+        ptr.aksi = 'sambung'; draftPts = [{ x: kapal.target.x, y: kapal.target.y }]; return;
     }
 
-    // Ketuk atau tahan kapal: mulai gambar rute baru
     if (Math.hypot(p.x - toSX(kapal.x), p.y - toSY(kapal.y)) < RADIUS_SENTUH_KAPAL) {
-        ptr.aksi = 'kapal';
-        draftPts = [];
-        return;
+        ptr.aksi = 'kapal'; draftPts = []; return;
     }
 
     ptr.aksi = 'pan';
@@ -660,17 +579,12 @@ canvas.addEventListener('pointermove', aman('pointermove', e => {
         seret.x = p.x; seret.y = p.y;
     } else if ((ptr.aksi === 'kapal' || ptr.aksi === 'sambung') && ptr.moved) {
         const w = { x: dariSX(p.x), y: dariSY(p.y) };
-        if (ptr.aksi === 'kapal' && draftPts.length === 0) {
-            draftPts.push({ x: kapal.x, y: kapal.y });
-        }
+        if (ptr.aksi === 'kapal' && draftPts.length === 0) draftPts.push({ x: kapal.x, y: kapal.y });
         const last = draftPts[draftPts.length - 1];
-        if (!last || Math.hypot(w.x - last.x, w.y - last.y) >= JALUR_STEP / kamera.skala) {
-            draftPts.push({ x: w.x, y: w.y });
-        }
+        if (!last || Math.hypot(w.x - last.x, w.y - last.y) >= JALUR_STEP / kamera.skala) draftPts.push({ x: w.x, y: w.y });
         pilihKapal = false;
     } else if (ptr.aksi === 'pan' || ptr.aksi === 'grid') {
-        kamera.x -= dx / kamera.skala;
-        kamera.y -= dy / kamera.skala;
+        kamera.x -= dx / kamera.skala; kamera.y -= dy / kamera.skala;
     }
     ptr.lx = p.x; ptr.ly = p.y;
 }));
@@ -687,8 +601,7 @@ canvas.addEventListener('pointerup', aman('pointerup', e => {
                 const a = anchorFor(seret.id, q.i, q.j);
                 tempatkan(seret.id, a.i, a.j);
             }
-            seret = null;
-            break;
+            seret = null; break;
 
         case 'bilah':
             if (!ptr.moved) {
@@ -707,30 +620,22 @@ canvas.addEventListener('pointerup', aman('pointerup', e => {
         case 'kapal':
             if (ptr.moved && draftPts.length >= 2) kunciJalur();
             else if (!ptr.moved && !kapal.target) pilihKapal = true;
-            draftPts = [];
-            break;
+            draftPts = []; break;
 
         case 'sambung':
             if (ptr.moved && draftPts.length >= 2) kunciJalur();
-            draftPts = [];
-            break;
+            draftPts = []; break;
 
         case 'pan':
-            if (!ptr.moved) pilihKapal = false;
-            break;
+            if (!ptr.moved) pilihKapal = false; break;
 
         case 'build':
-            if (!ptr.moved) masukBangun();
-            break;
+            if (!ptr.moved) masukBangun(); break;
     }
     ptr = null;
 }));
 
-canvas.addEventListener('pointercancel', () => {
-    ptr = null;
-    seret = null;
-    draftPts = [];
-});
+canvas.addEventListener('pointercancel', () => { ptr = null; seret = null; draftPts = []; });
 
 // ==========================================
 // 11. GAMBAR
@@ -791,16 +696,11 @@ function gambarKapalPada(x, y, th, alpha, overlay) {
                 (BATAS_I[1] + 1 - BATAS_I[0]) * C, (BATAS_J[1] + 1 - BATAS_J[0]) * C);
             ctx.setLineDash([]);
         }
-    } finally {
-        ctx.restore();
-    }
+    } finally { ctx.restore(); }
 }
 
-function gambarKapal() {
-    gambarKapalPada(kapal.x, kapal.y, kapal.th, 1, mode === 'bangun');
-}
+function gambarKapal() { gambarKapalPada(kapal.x, kapal.y, kapal.th, 1, mode === 'bangun'); }
 
-// Garis putus-putus dari kapal melewati daftar titik (tanpa panah)
 function gambarGaris(list, warna) {
     if (list.length < 1) return;
     ctx.save();
@@ -817,12 +717,10 @@ function gambarGaris(list, warna) {
 
 function gambarJalur() {
     if (mode !== 'uji') return;
-
     if (sedangGambar()) {
         gambarGaris(previewList(), 'rgba(147,197,253,0.9)');
         return;
     }
-
     if (kapal.target && kapal.rute.length >= 2) {
         gambarGaris(sisaRuteDepan(), 'rgba(253,224,71,0.9)');
     }
@@ -830,7 +728,6 @@ function gambarJalur() {
 
 function gambarBayangan() {
     if (mode !== 'uji') return;
-
     if (sedangGambar()) {
         const list = previewList();
         const last = list[list.length - 1];
@@ -838,7 +735,6 @@ function gambarBayangan() {
         const th = (last.x === prev.x && last.y === prev.y) ? kapal.th : arahKe(last.x - prev.x, last.y - prev.y);
         gambarKapalPada(last.x, last.y, th, 0.35, false);
     }
-
     if (kapal.target) {
         gambarKapalPada(kapal.target.x, kapal.target.y, kapal.target.th, 0.35, false);
     } else if (pilihKapal && !sedangGambar()) {
@@ -961,7 +857,6 @@ function gambar() {
 // ==========================================
 function loop(now) {
     requestAnimationFrame(loop);
-
     let dt = (now - terakhir) / 1000;
     terakhir = now;
     if (!(dt >= 0)) dt = 0;
