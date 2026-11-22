@@ -39,13 +39,13 @@ const gbr = {};
 for (const k in ASET) { gbr[k] = new Image(); gbr[k].src = ASET[k]; }
 
 const C = 16;
-const KW = 384, KH = 528, COLS = KW / C, ROWS = KH / C;   // 24 x 33 sel
-const PX = KW / 2, PY = KH / 2;                           // pusat kapal = pusat kerangka
+const KW = 384, KH = 528, COLS = KW / C, ROWS = KH / C;
+const PX = KW / 2, PY = KH / 2;
 
 // CEK: posisi inti dalam satuan sel (2×2 sel = 32×32 piksel)
 const INTI = { i: 11, j: 24, w: 2, h: 2 };
 
-// CEK: kotak tempat pendorong utama (2×3 sel), sesuaikan dengan deretan kotak di kerangka
+// CEK: kotak tempat pendorong utama (2×3 sel)
 const SLOT = [
     { i: 3,  j: 29, w: 2, h: 3 },
     { i: 7,  j: 29, w: 2, h: 3 },
@@ -59,16 +59,14 @@ const DEF = { utama: { w: 2, h: 3 }, sel: { w: 1, h: 1 } };
 const TOMBOL = [['utama', 'Utama'], ['sel', 'Sel'], ['hapus', 'Hapus'], ['ok', 'OK']];
 const DIR4 = [[1, 0], [-1, 0], [0, 1], [0, -1]];
 
-// Kamera
 const SKALA_BANGUN = 0.6;
 const ZOOM_MIN = 0.2, ZOOM_MAX = 3, ZOOM_LANGKAH = 1.25;
 
-// Gerak tanpa inersia
-const VMAX = 200;        // px/s, kecepatan maju saat pendorong utama aktif
-const REM = 40;          // px/s², perlambatan saat mengerem
-const PUTAR = 2;         // rad/s, kecepatan belok langsung
-const ARRIVE = 4;        // px, jarak dianggap sampai
-const SEJAJAR = 0.2;     // rad, kapal mulai maju kalau sudah cukup menghadap tujuan
+const VMAX = 200;
+const REM = 40;
+const PUTAR = 2;
+const ARRIVE = 4;
+const SEJAJAR = 0.2;
 
 // ==========================================
 // 2. STATUS
@@ -76,14 +74,14 @@ const SEJAJAR = 0.2;     // rad, kapal mulai maju kalau sudah cukup menghadap tu
 const kamera = { x: 0, y: 0, skala: SKALA_BANGUN };
 let mode = 'bangun';
 let hapusAktif = false;
-let seret = null;              // opsi yang sedang diangkat: { id, x, y }
-let rutaDraw = null;           // titik tujuan sementara saat seret di mode uji
+let seret = null;
+let rutaDraw = null;
 let ptr = null;
 let cells = new Map();
 let rangkaSet = new Set();
 let thrs = [];
 let terakhir = performance.now();
-let errorTerakhir = null;      // pesan error yang ditampilkan di layar
+let errorTerakhir = null;      // pesan error terakhir, selalu ditampilkan di layar
 
 let kapal = {
     x: 0, y: 0, th: 0, v: 0,
@@ -94,19 +92,32 @@ let kapal = {
 // ==========================================
 // 3. PENGAMAN ERROR
 // ==========================================
+let errorLog = '';
 function catatError(lokasi, err) {
     const pesan = err && err.message ? err.message : String(err);
     errorTerakhir = `[${lokasi}] ${pesan}`;
-    console.error(err);
+    if (errorTerakhir !== errorLog) {
+        errorLog = errorTerakhir;
+        console.error(err);
+    }
 }
 
 window.addEventListener('error', e => catatError('global', e.error || e.message));
+window.addEventListener('unhandledrejection', e => catatError('promise', e.reason));
 
-// Bungkus handler pointer supaya error di dalamnya tidak menghentikan halaman
 function aman(lokasi, fn) {
     return e => {
         try { fn(e); } catch (err) { catatError(lokasi, err); }
     };
+}
+
+function coba(nama, fn) {
+    try { fn(); } catch (err) { catatError(nama, err); }
+}
+
+// Gambar dianggap siap hanya jika sudah dimuat dan berhasil (naturalWidth > 0)
+function siapGambar(img) {
+    return !!img && img.complete && img.naturalWidth > 0;
 }
 
 // ==========================================
@@ -475,47 +486,50 @@ function gambarKisi() {
 
 function gambarKapal() {
     ctx.save();
-    ctx.translate(toSX(kapal.x), toSY(kapal.y));
-    ctx.scale(kamera.skala, kamera.skala);
-    ctx.rotate(kapal.th);
+    try {
+        ctx.translate(toSX(kapal.x), toSY(kapal.y));
+        ctx.scale(kamera.skala, kamera.skala);
+        ctx.rotate(kapal.th);
 
-    if (gbr.rangka.complete) ctx.drawImage(gbr.rangka, -PX, -PY, KW, KH);
+        if (siapGambar(gbr.rangka)) ctx.drawImage(gbr.rangka, -PX, -PY, KW, KH);
 
-    const im = kapal.hidup ? gbr.intiHidup : gbr.intiMati;
-    if (im.complete) ctx.drawImage(im, INTI.i * C - PX, INTI.j * C - PY, INTI.w * C, INTI.h * C);
+        const im = kapal.hidup ? gbr.intiHidup : gbr.intiMati;
+        if (siapGambar(im)) ctx.drawImage(im, INTI.i * C - PX, INTI.j * C - PY, INTI.w * C, INTI.h * C);
 
-    if (gbr.sel.complete) {
-        for (const c of cells.values()) {
-            if (c.tipe === 'sel') ctx.drawImage(gbr.sel, c.i * C - PX, c.j * C - PY, C, C);
+        if (siapGambar(gbr.sel)) {
+            for (const c of cells.values()) {
+                if (c.tipe === 'sel') ctx.drawImage(gbr.sel, c.i * C - PX, c.j * C - PY, C, C);
+            }
         }
-    }
 
-    if (gbr.utama.complete) {
-        for (const t of thrs) ctx.drawImage(gbr.utama, t.i * C - PX, t.j * C - PY, 32, 48);
-    }
+        if (siapGambar(gbr.utama)) {
+            for (const t of thrs) ctx.drawImage(gbr.utama, t.i * C - PX, t.j * C - PY, 32, 48);
+        }
 
-    if (gbr.efek.complete && kapal.gas) {
-        const w = gbr.efek.naturalWidth * 0.25, h = gbr.efek.naturalHeight * 0.25;
-        for (const t of thrs) {
-            if (!t.aktif) continue;
+        if (kapal.gas && siapGambar(gbr.efek)) {
+            const w = gbr.efek.naturalWidth * 0.25, h = gbr.efek.naturalHeight * 0.25;
             ctx.globalAlpha = 0.9;
-            ctx.drawImage(gbr.efek, t.i * C - PX + 16 - w / 2, t.j * C - PY + 48, w, h);
+            for (const t of thrs) {
+                if (!t.aktif) continue;
+                ctx.drawImage(gbr.efek, t.i * C - PX + 16 - w / 2, t.j * C - PY + 48, w, h);
+            }
             ctx.globalAlpha = 1;
         }
-    }
 
-    if (mode === 'bangun') {
-        ctx.lineWidth = 1 / kamera.skala;
-        ctx.setLineDash([4, 3]);
-        ctx.strokeStyle = 'rgba(253,224,71,0.5)';
-        for (const s of SLOT) {
-            ctx.strokeRect(s.i * C - PX, s.j * C - PY, s.w * C, s.h * C);
+        if (mode === 'bangun') {
+            ctx.lineWidth = 1 / kamera.skala;
+            ctx.setLineDash([4, 3]);
+            ctx.strokeStyle = 'rgba(253,224,71,0.5)';
+            for (const s of SLOT) {
+                ctx.strokeRect(s.i * C - PX, s.j * C - PY, s.w * C, s.h * C);
+            }
+            ctx.strokeRect(BATAS_I[0] * C - PX, BATAS_J[0] * C - PY,
+                (BATAS_I[1] + 1 - BATAS_I[0]) * C, (BATAS_J[1] + 1 - BATAS_J[0]) * C);
+            ctx.setLineDash([]);
         }
-        ctx.strokeRect(BATAS_I[0] * C - PX, BATAS_J[0] * C - PY,
-            (BATAS_I[1] + 1 - BATAS_I[0]) * C, (BATAS_J[1] + 1 - BATAS_J[0]) * C);
-        ctx.setLineDash([]);
+    } finally {
+        ctx.restore();
     }
-    ctx.restore();
 }
 
 function gambarSeret() {
@@ -537,14 +551,14 @@ function gambarSeret() {
         ctx.strokeStyle = ok ? '#4ade80' : '#f87171';
         ctx.lineWidth = 2;
         ctx.strokeRect(x0, y0, w, h);
-        if (img.complete) {
+        if (siapGambar(img)) {
             ctx.globalAlpha = 0.6;
             ctx.drawImage(img, x0, y0, w, h);
             ctx.globalAlpha = 1;
         }
     }
 
-    if (img.complete) {
+    if (siapGambar(img)) {
         const iw = img.naturalWidth * 1.5, ih = img.naturalHeight * 1.5;
         ctx.globalAlpha = 0.9;
         ctx.drawImage(img, seret.x - iw / 2, seret.y - 70 - ih / 2, iw, ih);
@@ -607,29 +621,32 @@ function gambarUI() {
     ctx.restore();
 }
 
+// Pesan error selalu di bagian atas layar, dipanggil di luar gambar()
 function gambarError() {
     if (!errorTerakhir) return;
     ctx.save();
-    ctx.fillStyle = 'rgba(0,0,0,0.85)';
-    ctx.fillRect(0, canvas.height / 2 - 40, canvas.width, 80);
-    ctx.fillStyle = '#f87171';
-    ctx.font = '13px monospace';
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    ctx.fillText('ERROR:', canvas.width / 2, canvas.height / 2 - 18);
-    ctx.fillText(errorTerakhir, canvas.width / 2, canvas.height / 2 + 6);
+    ctx.fillStyle = 'rgba(80,0,0,0.92)';
+    ctx.fillRect(0, 0, canvas.width, 60);
+    ctx.fillStyle = '#fca5a5';
+    ctx.font = '12px monospace';
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'top';
+    ctx.fillText('ERROR:', 10, 6);
+    ctx.fillText(errorTerakhir.slice(0, 120), 10, 22);
+    ctx.fillText(errorTerakhir.slice(120, 240), 10, 38);
     ctx.restore();
 }
 
 function gambar() {
     ctx.fillStyle = '#07080d';
     ctx.fillRect(0, 0, canvas.width, canvas.height);
-    gambarKisi();
-    gambarKapal();
-    gambarRute();
+
+    coba('kisi', gambarKisi);
+    coba('kapal', gambarKapal);
+    coba('rute', gambarRute);
 
     if (mode === 'bangun') {
-        gambarSeret();
+        coba('seret', gambarSeret);
         for (const b of tombolBilah()) {
             const aktif = (seret && seret.id === b.id) || (b.id === 'hapus' && hapusAktif);
             gambarTombolKotak(b, b.label, aktif);
@@ -640,37 +657,33 @@ function gambar() {
 
     gambarTombolKotak(tombolZoomIn(), '+', false);
     gambarTombolKotak(tombolZoomOut(), '−', false);
-    gambarUI();
-    gambarError();
+    coba('ui', gambarUI);
 }
 
 // ==========================================
 // 11. LOOP
 // ==========================================
-// Logika dan gambar dipisah, masing-masing punya try/catch sendiri.
-// Error di logika tidak menghentikan gambar, dan requestAnimationFrame selalu dipanggil.
+// requestAnimationFrame dipanggil paling awal, jadi loop tidak pernah berhenti.
+// Logika, gambar, dan pesan error masing-masing dibungkus sendiri.
 function loop(now) {
+    requestAnimationFrame(loop);
+
     let dt = (now - terakhir) / 1000;
     terakhir = now;
+    if (!(dt >= 0)) dt = 0;
     if (dt > 0.05) dt = 0.05;
 
-    try {
+    coba('logika', () => {
         hitungKoneksi();
         if (mode === 'uji') kendali(dt);
         else {
             kapal.v = 0; kapal.target = null; kapal.gas = false; kapal.status = '-';
         }
-    } catch (err) {
-        catatError('logika', err);
-    }
+    });
 
-    try {
-        gambar();
-    } catch (err) {
-        catatError('gambar', err);
-    }
+    coba('gambar', gambar);
 
-    requestAnimationFrame(loop);
+    try { gambarError(); } catch (_) {}
 }
 
 function mulai() {
@@ -678,11 +691,7 @@ function mulai() {
         setTimeout(mulai, 100);
         return;
     }
-    try {
-        initKapal();
-    } catch (err) {
-        catatError('initKapal', err);
-    }
+    coba('initKapal', initKapal);
     requestAnimationFrame(loop);
 }
 mulai();
