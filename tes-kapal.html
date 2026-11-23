@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-<title>Tes Kapal - Aset Sinkron</title>
+<title>Tes Kapal - Rumah Pendorong Bebas</title>
 <style>
 body,html{margin:0;padding:0;width:100%;height:100%;overflow:hidden;background:#07080d;font-family:monospace}
 canvas{display:block;touch-action:none}
@@ -42,21 +42,15 @@ const C = 16;
 const KW = 384, KH = 528, COLS = KW / C, ROWS = KH / C;
 const PX = KW / 2, PY = KH / 2;
 
-// Posisi inti dibaca dari PNG (diisi saat mulai), bukan tebakan
+// Posisi inti dibaca dari PNG inti (diisi saat mulai)
 let INTI = { i: 0, j: 0, w: 2, h: 2, ada: false };
 
 const DEF = { utama: { w: 2, h: 3 }, sel: { w: 1, h: 1 } };
 const TOMBOL = [['utama', 'Utama'], ['sel', 'Sel'], ['hapus', 'Hapus'], ['ok', 'OK']];
 const DIR4 = [[1, 0], [-1, 0], [0, 1], [0, -1]];
 
-// Rumah pendorong sementara memakai kotak tetap sampai poin 4 dikerjakan
-const SLOT = [
-    { i: 3,  j: 29, w: 2, h: 3 },
-    { i: 7,  j: 29, w: 2, h: 3 },
-    { i: 11, j: 29, w: 2, h: 3 },
-    { i: 15, j: 29, w: 2, h: 3 },
-    { i: 19, j: 29, w: 2, h: 3 }
-];
+// Rumah pendorong bebas: aturan penempatan
+const RENTANG_KOLOM = 2;        // sel tambahan di kiri dan kanan lebar inti
 
 const BATAS_I = [-8, 31], BATAS_J = [-4, 35];
 
@@ -73,11 +67,11 @@ const REM = 2;
 const A_LATERAL = 2;
 
 const JENIS = {
-    fregat:    { sel: 60,    lurus: 60, omega: 0.10, aktif: false },
-    destroyer: { sel: 120,   lurus: 50, omega: 0.07, aktif: false },
-    kruiser:   { sel: 232,   lurus: 40, omega: 0.05, aktif: true  },
-    perang:    { sel: 600,   lurus: 30, omega: 0.03, aktif: false },
-    raksasa:   { sel: 12965, lurus: 15, omega: 0.01, aktif: false }
+    fregat:    { sel: 60,    lurus: 60, omega: 0.10, maksPendorong: 3, aktif: false },
+    destroyer: { sel: 120,   lurus: 50, omega: 0.07, maksPendorong: 4, aktif: false },
+    kruiser:   { sel: 232,   lurus: 40, omega: 0.05, maksPendorong: 5, aktif: true  },
+    perang:    { sel: 600,   lurus: 30, omega: 0.03, maksPendorong: 6, aktif: false },
+    raksasa:   { sel: 12965, lurus: 15, omega: 0.01, maksPendorong: 12, aktif: false }
 };
 const JENIS_AKTIF = JENIS.kruiser;
 
@@ -192,7 +186,6 @@ function arahKe(dx, dy) { return Math.atan2(dx, -dy); }
 // ==========================================
 // 5. BANGUN KAPAL
 // ==========================================
-// Membaca alpha PNG per sel 16x16. Mengembalikan daftar [i, j] sel yang berisi piksel.
 function bacaSelDariGambar(img) {
     const c = document.createElement('canvas');
     c.width = KW; c.height = KH;
@@ -215,7 +208,6 @@ function bacaSelDariGambar(img) {
     return hasil;
 }
 
-// Posisi inti: kotak pembungkus dari sel inti yang dibaca dari PNG inti
 function bacaInti() {
     const sel = bacaSelDariGambar(gbr.inti);
     if (sel.length === 0) return { i: 0, j: 0, w: 2, h: 2, ada: false };
@@ -247,25 +239,44 @@ function initKapal() {
     }
 }
 
-function dalamSlot(i, j, w, h) {
-    return SLOT.some(s => i >= s.i && j >= s.j && i + w <= s.i + s.w && j + h <= s.j + s.h);
+// Rumah pendorong bebas: selatan inti, dalam rentang kolom, bersisian dengan sel tersambung,
+// tidak menimpa sel selain kerangka, dan jumlah belum melewati batas jenis.
+function bolehTaruhPendorong(ai, aj) {
+    const d = DEF.utama;
+    if (!INTI.ada) return false;
+    if (thrs.length >= JENIS_AKTIF.maksPendorong) return false;
+    if (aj <= INTI.j + INTI.h - 1) return false;               // harus di selatan inti
+    if (ai < INTI.i - RENTANG_KOLOM) return false;
+    if (ai + d.w - 1 > INTI.i + INTI.w - 1 + RENTANG_KOLOM) return false;
+    if (ai < BATAS_I[0] || ai + d.w - 1 > BATAS_I[1]) return false;
+    if (aj < BATAS_J[0] || aj + d.h - 1 > BATAS_J[1]) return false;
+
+    let bersisian = false;
+    for (let x = 0; x < d.w; x++) {
+        for (let y = 0; y < d.h; y++) {
+            const i = ai + x, j = aj + y;
+            const c = cells.get(kunci(i, j));
+            if (c && c.tipe !== 'rangka') return false;
+            if (!bersisian) {
+                for (const [di, dj] of DIR4) {
+                    const n = cells.get(kunci(i + di, j + dj));
+                    if (n && (n.tipe === 'rangka' || n.tipe === 'inti')) { bersisian = true; break; }
+                }
+            }
+        }
+    }
+    return bersisian;
+}
+
+function bolehTaruhSel(i, j) {
+    if (i < BATAS_I[0] || i > BATAS_I[1] || j < BATAS_J[0] || j > BATAS_J[1]) return false;
+    if (cells.has(kunci(i, j))) return false;
+    return DIR4.some(([di, dj]) => cells.has(kunci(i + di, j + dj)));
 }
 
 function bolehTaruh(id, i, j) {
-    if (id === 'sel') {
-        if (i < BATAS_I[0] || i > BATAS_I[1] || j < BATAS_J[0] || j > BATAS_J[1]) return false;
-        if (cells.has(kunci(i, j))) return false;
-        return DIR4.some(([di, dj]) => cells.has(kunci(i + di, j + dj)));
-    }
-    const d = DEF[id];
-    if (!dalamSlot(i, j, d.w, d.h)) return false;
-    for (let x = 0; x < d.w; x++) {
-        for (let y = 0; y < d.h; y++) {
-            const c = cells.get(kunci(i + x, j + y));
-            if (c && c.tipe !== 'rangka') return false;
-        }
-    }
-    return true;
+    if (id === 'sel') return bolehTaruhSel(i, j);
+    return bolehTaruhPendorong(i, j);
 }
 
 function tempatkan(id, ai, aj) {
@@ -789,7 +800,6 @@ function gambarKapalPada(x, y, th, alpha, overlay, waktu = 0) {
 
         if (siapGambar(gbr.rangka)) ctx.drawImage(gbr.rangka, -PX, -PY, KW, KH);
 
-        // Inti: satu gambar untuk hidup maupun mati (aset mati belum ada)
         if (siapGambar(gbr.inti) && INTI.ada) {
             ctx.drawImage(gbr.inti, -PX, -PY, KW, KH);
         }
@@ -814,7 +824,6 @@ function gambarKapalPada(x, y, th, alpha, overlay, waktu = 0) {
             ctx.lineWidth = 1 / kamera.skala;
             ctx.setLineDash([4, 3]);
             ctx.strokeStyle = 'rgba(253,224,71,0.5)';
-            for (const s of SLOT) ctx.strokeRect(s.i * C - PX, s.j * C - PY, s.w * C, s.h * C);
             ctx.strokeRect(BATAS_I[0] * C - PX, BATAS_J[0] * C - PY,
                 (BATAS_I[1] + 1 - BATAS_I[0]) * C, (BATAS_J[1] + 1 - BATAS_J[0]) * C);
             ctx.setLineDash([]);
@@ -918,7 +927,7 @@ function gambarUI() {
         `Inti: ${INTI.ada ? `(${INTI.i},${INTI.j}) ${INTI.w}x${INTI.h}` : 'TIDAK TERBACA'}`,
         `Sambung: ${kapal.tersambung}/${cells.size}`,
         `Massa: ${cells.size} ton`,
-        `Utama aktif: ${aktif}/${thrs.length}`,
+        `Utama aktif: ${aktif}/${thrs.length} (maks ${JENIS_AKTIF.maksPendorong})`,
         `Akselerasi maks: ${accelMaks(aktif).toFixed(1)} m/s²`,
         `Rem: ${REM} m/s²`,
         `Lurus maks: ${JENIS_AKTIF.lurus} px/s`,
