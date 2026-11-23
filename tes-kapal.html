@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-<title>Tes Kapal - Final</title>
+<title>Tes Kapal - Acuan Inti</title>
 <style>
 body,html{margin:0;padding:0;width:100%;height:100%;overflow:hidden;background:#07080d;font-family:monospace}
 canvas{display:block;touch-action:none}
@@ -45,6 +45,9 @@ const PX = KW / 2, PY = KH / 2;
 // Posisi inti dibaca dari PNG inti (diisi saat mulai)
 let INTI = { i: 0, j: 0, w: 2, h: 2, ada: false };
 
+// Offset pusat inti dari pusat kerangka (px dunia). Titik acuan kapal = inti.
+let OFS_INTI = { x: 0, y: 0 };
+
 const DEF = { utama: { w: 2, h: 3 }, sel: { w: 1, h: 1 } };
 const TOMBOL = [['utama', 'Utama'], ['sel', 'Sel'], ['hapus', 'Hapus'], ['ok', 'OK']];
 const DIR4 = [[1, 0], [-1, 0], [0, 1], [0, -1]];
@@ -73,7 +76,6 @@ const JENIS = {
 };
 const JENIS_AKTIF = JENIS.kruiser;
 
-// Lebar kolom pendorong = 50% dari batas sel jenis aktif (kruiser: 20 sel)
 const LEBAR_KOLOM = Math.round(JENIS_AKTIF.batasSel * 0.5);
 
 const FAKTOR_SUDUT = [
@@ -98,16 +100,14 @@ const BUSUR_LANGKAH = 0.1;
 const RADIUS_SENTUH_KAPAL = 80;
 const UJUNG_SENTUH = 90;
 
-// Bayangan: alpha berkurang saat kapal mendekat
 const BAYANGAN_ALPHA = 0.35;
-const BAYANGAN_JARAK_DEKAT = 16;     // px: di bawah ini bayangan hampir hilang
-const BAYANGAN_JARAK_JAUH = 160;     // px: di atas ini bayangan penuh
+const BAYANGAN_JARAK_DEKAT = 16;
+const BAYANGAN_JARAK_JAUH = 160;
 
-// Suara
 const SFX_SRC = 'suara-pendorong.mp3';
 const SFX_VOLUME_DASAR = 0.4;
 const SFX_FADE_DETIK = 0.4;
-const FAKTOR_JARAK = 2;              // suara mulai terdengar pada 2x ukuran maks kapal
+const FAKTOR_JARAK = 2;
 const SFX_VOLUME_SAAT_BELOK = 0.85;
 
 // ==========================================
@@ -126,6 +126,7 @@ let thrs = [];
 let terakhir = performance.now();
 let errorTerakhir = null;
 
+// kapal.x, kapal.y = posisi INTI (titik acuan kapal)
 let kapal = {
     x: 0, y: 0, th: 0, v: 0, nyala: 0,
     target: null,
@@ -188,8 +189,9 @@ function posisi(e) {
     const r = canvas.getBoundingClientRect();
     return { x: e.clientX - r.left, y: e.clientY - r.top };
 }
+// Koordinat sel grid -> koordinat dunia kapal (relatif pusat kerangka, sebelum offset inti)
 function layarKeKisi(sx, sy) {
-    const wx = dariSX(sx), wy = dariSY(sy);
+    const wx = dariSX(sx) - kapal.x + OFS_INTI.x, wy = dariSY(sy) - kapal.y + OFS_INTI.y;
     return { i: Math.floor((wx + PX) / C), j: Math.floor((wy + PY) / C) };
 }
 function anchorFor(id, i, j) {
@@ -236,6 +238,14 @@ function bacaInti() {
     return { i: minI, j: minJ, w: maxI - minI + 1, h: maxJ - minJ + 1, ada: true };
 }
 
+// Offset pusat inti dari pusat kerangka, dihitung dari data INTI (bukan tebakan)
+function hitungOfsetInti() {
+    if (!INTI.ada) return { x: 0, y: 0 };
+    const pusatX = INTI.i * C + (INTI.w * C) / 2 - PX;
+    const pusatY = INTI.j * C + (INTI.h * C) / 2 - PY;
+    return { x: pusatX, y: pusatY };
+}
+
 function initKapal() {
     cells.clear();
     rangkaSet.clear();
@@ -245,6 +255,7 @@ function initKapal() {
         cells.set(kunci(i, j), { i, j, tipe: 'rangka', thr: null });
     }
     INTI = bacaInti();
+    OFS_INTI = hitungOfsetInti();
     if (INTI.ada) {
         for (let j = INTI.j; j < INTI.j + INTI.h; j++) {
             for (let i = INTI.i; i < INTI.i + INTI.w; i++) {
@@ -660,9 +671,11 @@ function hentikanSfx() {
     sfxMulai = false;
 }
 
+// Mode bangun: kapal ditaruh dengan pusat kerangka di (0,0) dunia, inti ada di OFS_INTI.
+// Karena kapal.x/y adalah inti, kapal.x/y = OFS_INTI.
 function masukBangun() {
     mode = 'bangun'; kapal.hidup = false; resetGerak();
-    kapal.x = 0; kapal.y = 0; kapal.th = 0;
+    kapal.x = OFS_INTI.x; kapal.y = OFS_INTI.y; kapal.th = 0;
     kamera.x = 0; kamera.y = 0; kamera.skala = SKALA_BANGUN;
     hapusAktif = false; seret = null; pilihKapal = false; draftPts = [];
     hentikanSfx();
@@ -705,7 +718,10 @@ canvas.addEventListener('pointerdown', aman('pointerdown', e => {
         ptr.aksi = 'sambung'; draftPts = [{ x: kapal.target.x, y: kapal.target.y }]; return;
     }
 
-    if (Math.hypot(p.x - toSX(kapal.x), p.y - toSY(kapal.y)) < RADIUS_SENTUH_KAPAL) {
+    // Sentuh kapal memakai area kerangka, bukan titik inti. Pusat area = inti (kapal.x/y)
+    // digeser sejauh OFS_INTI karena pusat kerangka berada di (kapal.x - OFS_INTI.x, kapal.y - OFS_INTI.y).
+    const pusatKerangkaX = toSX(kapal.x - OFS_INTI.x), pusatKerangkaY = toSY(kapal.y - OFS_INTI.y);
+    if (Math.hypot(p.x - pusatKerangkaX, p.y - pusatKerangkaY) < RADIUS_SENTUH_KAPAL) {
         ptr.aksi = 'kapal'; draftPts = []; return;
     }
 
@@ -791,7 +807,6 @@ function gambarKisi() {
     ctx.stroke();
 }
 
-// Api: bagian atas dipotong, panjang dan alpha mengikuti kapal.api (meredup saat rem)
 function gambarApi(t, waktu) {
     if (!siapGambar(gbr.efek)) return;
     const img = gbr.efek;
@@ -818,7 +833,6 @@ function gambarApi(t, waktu) {
     ctx.restore();
 }
 
-// Versi redup inti: dibuat sekali dari gambar inti hidup
 let intiRedup = null;
 function siapkanIntiRedup() {
     if (intiRedup || !siapGambar(gbr.inti)) return;
@@ -830,6 +844,8 @@ function siapkanIntiRedup() {
     intiRedup = c;
 }
 
+// Gambar kapal. (x, y) adalah posisi INTI. Gambar digeser sejauh OFS_INTI
+// supaya pusat inti jatuh tepat di (x, y).
 function gambarKapalPada(x, y, th, alpha, overlay, waktu = 0) {
     ctx.save();
     try {
@@ -837,10 +853,10 @@ function gambarKapalPada(x, y, th, alpha, overlay, waktu = 0) {
         ctx.translate(toSX(x), toSY(y));
         ctx.scale(kamera.skala, kamera.skala);
         ctx.rotate(th);
+        ctx.translate(-OFS_INTI.x, -OFS_INTI.y);
 
         if (siapGambar(gbr.rangka)) ctx.drawImage(gbr.rangka, -PX, -PY, KW, KH);
 
-        // Inti tampil statis: hidup asli, mati versi redup
         if (INTI.ada) {
             if (kapal.hidup && siapGambar(gbr.inti)) {
                 ctx.drawImage(gbr.inti, -PX, -PY, KW, KH);
@@ -905,7 +921,6 @@ function gambarJalur() {
     }
 }
 
-// Bayangan: alpha berkurang saat kapal mendekat, supaya kapal yang datang menutupinya
 function alphaBayangan() {
     if (!kapal.target) return BAYANGAN_ALPHA;
     const jarak = dist(kapal, kapal.target);
@@ -939,7 +954,8 @@ function gambarSeret() {
         const d = DEF[seret.id];
         const ok = bolehTaruh(seret.id, a.i, a.j);
         const s = kamera.skala;
-        const x0 = toSX(a.i * C - PX), y0 = toSY(a.j * C - PY);
+        const x0 = toSX(a.i * C - PX + OFS_INTI.x - kapal.x + kapal.x - OFS_INTI.x);
+        const y0 = toSY(a.j * C - PY + OFS_INTI.y - kapal.y + kapal.y - OFS_INTI.y);
         const w = d.w * C * s, h = d.h * C * s;
         ctx.fillStyle = ok ? 'rgba(74,222,128,0.35)' : 'rgba(248,113,113,0.35)';
         ctx.fillRect(x0, y0, w, h);
@@ -979,6 +995,7 @@ function gambarUI() {
         `Mode: ${mode === 'bangun' ? 'BANGUN' : 'UJI'}`,
         `Jenis aktif: kruiser`,
         `Inti: ${INTI.ada ? `(${INTI.i},${INTI.j}) ${INTI.w}x${INTI.h}` : 'TIDAK TERBACA'}`,
+        `Acuan: inti (ofs ${OFS_INTI.x.toFixed(0)}, ${OFS_INTI.y.toFixed(0)})`,
         `Kolom pendorong: ${LEBAR_KOLOM} sel (batas ${JENIS_AKTIF.batasSel})`,
         `Sambung: ${kapal.tersambung}/${cells.size}`,
         `Massa: ${cells.size} ton`,
@@ -1020,7 +1037,6 @@ function gambarError() {
     ctx.restore();
 }
 
-// Suara berdasarkan jarak kapal ke kamera, skala ke ukuran maks kapal
 function updateSuara() {
     const aktif = thrs.filter(t => t.aktif).length;
     const bisaBunyi = mode === 'uji' && kapal.hidup && aktif > 0 && kapal.v > 0.5;
@@ -1068,7 +1084,6 @@ function updateSuara() {
     kedua.volume = Math.max(0, kedua.volume - 0.05);
 }
 
-// Urutan gambar: bayangan dulu, lalu kapal asli di atasnya
 function gambar() {
     ctx.fillStyle = '#07080d';
     ctx.fillRect(0, 0, canvas.width, canvas.height);
@@ -1125,6 +1140,7 @@ function mulai() {
         return;
     }
     coba('initKapal', initKapal);
+    kapal.x = OFS_INTI.x; kapal.y = OFS_INTI.y;
     requestAnimationFrame(loop);
 }
 mulai();
