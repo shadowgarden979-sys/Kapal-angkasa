@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-<title>Tes Kapal - Rumah Pendorong Bebas</title>
+<title>Tes Kapal - Rumah Pendorong Kolom 50%</title>
 <style>
 body,html{margin:0;padding:0;width:100%;height:100%;overflow:hidden;background:#07080d;font-family:monospace}
 canvas{display:block;touch-action:none}
@@ -49,9 +49,6 @@ const DEF = { utama: { w: 2, h: 3 }, sel: { w: 1, h: 1 } };
 const TOMBOL = [['utama', 'Utama'], ['sel', 'Sel'], ['hapus', 'Hapus'], ['ok', 'OK']];
 const DIR4 = [[1, 0], [-1, 0], [0, 1], [0, -1]];
 
-// Rumah pendorong bebas: aturan penempatan
-const RENTANG_KOLOM = 2;        // sel tambahan di kiri dan kanan lebar inti
-
 const BATAS_I = [-8, 31], BATAS_J = [-4, 35];
 
 const SKALA_BANGUN = 0.6;
@@ -66,14 +63,18 @@ const REM = 2;
 
 const A_LATERAL = 2;
 
+// Data per jenis. batasSel = batas maksimum area bangun (sel)
 const JENIS = {
-    fregat:    { sel: 60,    lurus: 60, omega: 0.10, maksPendorong: 3, aktif: false },
-    destroyer: { sel: 120,   lurus: 50, omega: 0.07, maksPendorong: 4, aktif: false },
-    kruiser:   { sel: 232,   lurus: 40, omega: 0.05, maksPendorong: 5, aktif: true  },
-    perang:    { sel: 600,   lurus: 30, omega: 0.03, maksPendorong: 6, aktif: false },
-    raksasa:   { sel: 12965, lurus: 15, omega: 0.01, maksPendorong: 12, aktif: false }
+    fregat:    { sel: 60,    lurus: 60, omega: 0.10, maksPendorong: 3, batasSel: 20,  aktif: false },
+    destroyer: { sel: 120,   lurus: 50, omega: 0.07, maksPendorong: 4, batasSel: 25,  aktif: false },
+    kruiser:   { sel: 232,   lurus: 40, omega: 0.05, maksPendorong: 5, batasSel: 40,  aktif: true  },
+    perang:    { sel: 600,   lurus: 30, omega: 0.03, maksPendorong: 6, batasSel: 70,  aktif: false },
+    raksasa:   { sel: 12965, lurus: 15, omega: 0.01, maksPendorong: 12, batasSel: 150, aktif: false }
 };
 const JENIS_AKTIF = JENIS.kruiser;
+
+// Lebar kolom pendorong = 50% dari batas sel jenis aktif (kruiser: 20 sel)
+const LEBAR_KOLOM = Math.round(JENIS_AKTIF.batasSel * 0.5);
 
 const FAKTOR_SUDUT = [
     { maks: 0.30, f: 0.9 },
@@ -239,15 +240,19 @@ function initKapal() {
     }
 }
 
-// Rumah pendorong bebas: selatan inti, dalam rentang kolom, bersisian dengan sel tersambung,
-// tidak menimpa sel selain kerangka, dan jumlah belum melewati batas jenis.
+// Rumah pendorong: selatan inti, dalam kolom 50% batas jenis, tidak menimpa apa pun,
+// bersisian dengan kerangka atau inti, dan jumlah belum melewati batas jenis.
 function bolehTaruhPendorong(ai, aj) {
     const d = DEF.utama;
     if (!INTI.ada) return false;
     if (thrs.length >= JENIS_AKTIF.maksPendorong) return false;
-    if (aj <= INTI.j + INTI.h - 1) return false;               // harus di selatan inti
-    if (ai < INTI.i - RENTANG_KOLOM) return false;
-    if (ai + d.w - 1 > INTI.i + INTI.w - 1 + RENTANG_KOLOM) return false;
+    if (aj <= INTI.j + INTI.h - 1) return false;
+
+    const pusat = INTI.i + Math.floor(INTI.w / 2);
+    const kiri = pusat - Math.floor(LEBAR_KOLOM / 2);
+    const kanan = kiri + LEBAR_KOLOM - 1;
+    if (ai < kiri || ai + d.w - 1 > kanan) return false;
+
     if (ai < BATAS_I[0] || ai + d.w - 1 > BATAS_I[1]) return false;
     if (aj < BATAS_J[0] || aj + d.h - 1 > BATAS_J[1]) return false;
 
@@ -255,8 +260,7 @@ function bolehTaruhPendorong(ai, aj) {
     for (let x = 0; x < d.w; x++) {
         for (let y = 0; y < d.h; y++) {
             const i = ai + x, j = aj + y;
-            const c = cells.get(kunci(i, j));
-            if (c && c.tipe !== 'rangka') return false;
+            if (cells.has(kunci(i, j))) return false;
             if (!bersisian) {
                 for (const [di, dj] of DIR4) {
                     const n = cells.get(kunci(i + di, j + dj));
@@ -925,6 +929,7 @@ function gambarUI() {
         `Mode: ${mode === 'bangun' ? 'BANGUN' : 'UJI'}`,
         `Jenis aktif: kruiser`,
         `Inti: ${INTI.ada ? `(${INTI.i},${INTI.j}) ${INTI.w}x${INTI.h}` : 'TIDAK TERBACA'}`,
+        `Kolom pendorong: ${LEBAR_KOLOM} sel (batas ${JENIS_AKTIF.batasSel})`,
         `Sambung: ${kapal.tersambung}/${cells.size}`,
         `Massa: ${cells.size} ton`,
         `Utama aktif: ${aktif}/${thrs.length} (maks ${JENIS_AKTIF.maksPendorong})`,
