@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-<title>Tes Kapal - Final</title>
+<title>Tes Kapal - Aset Sinkron</title>
 <style>
 body,html{margin:0;padding:0;width:100%;height:100%;overflow:hidden;background:#07080d;font-family:monospace}
 canvas{display:block;touch-action:none}
@@ -27,12 +27,12 @@ function resize() {
 window.addEventListener('resize', resize);
 resize();
 
+// Nama file HARUS sama persis dengan yang ada di repo GitHub
 const ASET = {
-    rangka: 'kerangkainti-384×528.png',
-    intiHidup: 'intireaktorhidup-32×32px.png',
-    intiMati: 'intireaktormati-32×32px.png',
-    utama: 'pendorong-32×48px.png',
-    sel: 'sel-16×16px.png',
+    rangka: 'kerangkakruiser-384x528px.png',
+    inti: 'intikruiser-384x528px.png',
+    utama: 'pendorong-32x48px.png',
+    sel: 'sel-16x16px.png',
     efek: 'efek-pendorong.png'
 };
 const gbr = {};
@@ -42,10 +42,14 @@ const C = 16;
 const KW = 384, KH = 528, COLS = KW / C, ROWS = KH / C;
 const PX = KW / 2, PY = KH / 2;
 
-// CEK: posisi inti dalam satuan sel
-const INTI = { i: 11, j: 24, w: 2, h: 2 };
+// Posisi inti dibaca dari PNG (diisi saat mulai), bukan tebakan
+let INTI = { i: 0, j: 0, w: 2, h: 2, ada: false };
 
-// CEK: kotak tempat pendorong utama (2×3 sel)
+const DEF = { utama: { w: 2, h: 3 }, sel: { w: 1, h: 1 } };
+const TOMBOL = [['utama', 'Utama'], ['sel', 'Sel'], ['hapus', 'Hapus'], ['ok', 'OK']];
+const DIR4 = [[1, 0], [-1, 0], [0, 1], [0, -1]];
+
+// Rumah pendorong sementara memakai kotak tetap sampai poin 4 dikerjakan
 const SLOT = [
     { i: 3,  j: 29, w: 2, h: 3 },
     { i: 7,  j: 29, w: 2, h: 3 },
@@ -55,9 +59,6 @@ const SLOT = [
 ];
 
 const BATAS_I = [-8, 31], BATAS_J = [-4, 35];
-const DEF = { utama: { w: 2, h: 3 }, sel: { w: 1, h: 1 } };
-const TOMBOL = [['utama', 'Utama'], ['sel', 'Sel'], ['hapus', 'Hapus'], ['ok', 'OK']];
-const DIR4 = [[1, 0], [-1, 0], [0, 1], [0, -1]];
 
 const SKALA_BANGUN = 0.6;
 const ZOOM_MIN = 0.2, ZOOM_MAX = 3, ZOOM_LANGKAH = 1.25;
@@ -65,14 +66,12 @@ const ZOOM_MIN = 0.2, ZOOM_MAX = 3, ZOOM_LANGKAH = 1.25;
 // Fisika (1 px = 1 m, 1 sel = 1 ton)
 const KG_PER_SEL = 1000;
 const F_THR = 6.4e6;
-const ACEL_MAKS = 2;            // m/s², batas tubuh awak (kesan berat)
-const SPOOL = 2;                // detik, daya naik dari 0 ke penuh
-const REM = 2;                  // m/s², perlambatan (diatur manual)
+const ACEL_MAKS = 2;
+const SPOOL = 2;
+const REM = 2;
 
-// Gaya samping maksimum untuk belok
-const A_LATERAL = 2;            // m/s²
+const A_LATERAL = 2;
 
-// Data kecepatan per jenis (hanya kruiser yang dijalankan)
 const JENIS = {
     fregat:    { sel: 60,    lurus: 60, omega: 0.10, aktif: false },
     destroyer: { sel: 120,   lurus: 50, omega: 0.07, aktif: false },
@@ -82,23 +81,19 @@ const JENIS = {
 };
 const JENIS_AKTIF = JENIS.kruiser;
 
-// Faktor kecepatan belok berdasarkan besar sudut belokan
 const FAKTOR_SUDUT = [
     { maks: 0.30, f: 0.9 },
     { maks: 0.79, f: 0.6 },
     { maks: Infinity, f: 0.45 }
 ];
 
-// Pendorong utama dan api
-const PENDORONG_LEBAR = 32;     // px, lebar pendorong (api disamakan dengan ini)
+const PENDORONG_LEBAR = 32;
 
-// Pita jalur
 const LEBAR_PITA = 640;
 const PITA_ALPHA = 0.22;
 const KOREKSI_TEPI = 0.5;
-const AMBANG_BELOK = 0.3;       // rad (sekitar 17°)
+const AMBANG_BELOK = 0.3;
 
-// Rute
 const LOOK_JARAK = 300;
 const TOL_SIMPLIF = 16;
 const SEG_WINDOW = 8;
@@ -133,11 +128,10 @@ let kapal = {
     koreksi: 0
 };
 
-// Suara pendorong: satu audio untuk seluruh kapal, loop, volume diatur tiap frame
 const sfxPendorong = new Audio('suara-pendorong.mp3');
 sfxPendorong.loop = true;
 sfxPendorong.volume = 0;
-const SFX_VOLUME_DASAR = 0.4;   // volume dasar sebelum faktor kecepatan dan zoom
+const SFX_VOLUME_DASAR = 0.4;
 
 // ==========================================
 // 3. PENGAMAN ERROR
@@ -198,11 +192,12 @@ function arahKe(dx, dy) { return Math.atan2(dx, -dy); }
 // ==========================================
 // 5. BANGUN KAPAL
 // ==========================================
-function bacaMask() {
+// Membaca alpha PNG per sel 16x16. Mengembalikan daftar [i, j] sel yang berisi piksel.
+function bacaSelDariGambar(img) {
     const c = document.createElement('canvas');
     c.width = KW; c.height = KH;
     const g = c.getContext('2d');
-    g.drawImage(gbr.rangka, 0, 0, KW, KH);
+    g.drawImage(img, 0, 0, KW, KH);
     const d = g.getImageData(0, 0, KW, KH).data;
     const hasil = [];
     for (let j = 0; j < ROWS; j++) {
@@ -220,17 +215,34 @@ function bacaMask() {
     return hasil;
 }
 
+// Posisi inti: kotak pembungkus dari sel inti yang dibaca dari PNG inti
+function bacaInti() {
+    const sel = bacaSelDariGambar(gbr.inti);
+    if (sel.length === 0) return { i: 0, j: 0, w: 2, h: 2, ada: false };
+    let minI = Infinity, minJ = Infinity, maxI = -Infinity, maxJ = -Infinity;
+    for (const [i, j] of sel) {
+        if (i < minI) minI = i;
+        if (j < minJ) minJ = j;
+        if (i > maxI) maxI = i;
+        if (j > maxJ) maxJ = j;
+    }
+    return { i: minI, j: minJ, w: maxI - minI + 1, h: maxJ - minJ + 1, ada: true };
+}
+
 function initKapal() {
     cells.clear();
     rangkaSet.clear();
     thrs = [];
-    for (const [i, j] of bacaMask()) {
+    for (const [i, j] of bacaSelDariGambar(gbr.rangka)) {
         rangkaSet.add(kunci(i, j));
         cells.set(kunci(i, j), { i, j, tipe: 'rangka', thr: null });
     }
-    for (let j = INTI.j; j < INTI.j + INTI.h; j++) {
-        for (let i = INTI.i; i < INTI.i + INTI.w; i++) {
-            cells.set(kunci(i, j), { i, j, tipe: 'inti', thr: null });
+    INTI = bacaInti();
+    if (INTI.ada) {
+        for (let j = INTI.j; j < INTI.j + INTI.h; j++) {
+            for (let i = INTI.i; i < INTI.i + INTI.w; i++) {
+                cells.set(kunci(i, j), { i, j, tipe: 'inti', thr: null });
+            }
         }
     }
 }
@@ -519,11 +531,9 @@ function kendali(dt) {
     const end = k.target;
     const proj = updateSeg();
 
-    // Sisa jarak sepanjang rute ke bayangan (atau garis lurus bila rute sudah habis)
     const sisaJarak = proj ? sisaRute(proj) : dist(k, end);
     const ikutiJalur = !!proj && sisaJarak > LOOK_JARAK;
 
-    // Pengereman: mulai saat sisa jarak <= jarak henti, berlaku di semua kondisi
     const perluRem = sisaJarak <= jarakHenti(k.v);
 
     if (perluRem) {
@@ -545,7 +555,6 @@ function kendali(dt) {
         return;
     }
 
-    // Arah kemudi
     let hd;
     if (ikutiJalur) {
         const tp = titikDepan(proj, LOOK_JARAK);
@@ -554,7 +563,6 @@ function kendali(dt) {
         hd = arahKe(end.x - k.x, end.y - k.y);
     }
 
-    // Koreksi dari tepi pita
     k.koreksi = 0;
     if (ikutiJalur) {
         const sim = simpanganDariRute(proj);
@@ -573,13 +581,11 @@ function kendali(dt) {
     const s = clamp(k.nyala / SPOOL, 0, 1);
     const daya = s * s * (3 - 2 * s);
 
-    // Kecepatan target: lurus saat searah, belok saat selisih besar
     const besarErr = Math.abs(err);
     const vTarget = besarErr > AMBANG_BELOK
         ? kecepatanBelok(besarErr)
         : JENIS_AKTIF.lurus;
 
-    // Selalu dibatasi agar bisa direm tepat di bayangan
     const vAkhir = Math.min(vTarget, Math.sqrt(2 * REM * Math.max(0, sisaJarak)));
 
     if (k.v < vAkhir) {
@@ -631,7 +637,6 @@ function konfirm() {
     mode = 'uji'; kapal.hidup = true;
     kamera.skala = 1; kamera.x = kapal.x; kamera.y = kapal.y;
     hapusAktif = false; seret = null; pilihKapal = false; draftPts = [];
-    // Membuka kunci audio lewat interaksi tombol OK
     sfxPendorong.play().then(() => sfxPendorong.pause()).catch(() => {});
 }
 
@@ -750,30 +755,18 @@ function gambarKisi() {
     ctx.stroke();
 }
 
-// Api pendorong: lebar 32 px, bagian atas dipotong, panjang ikut kecepatan, berkedip, goyang lemah
 function gambarApi(t, waktu) {
     if (!siapGambar(gbr.efek)) return;
     const img = gbr.efek;
     const skalaTinggi = PENDORONG_LEBAR / img.naturalWidth;
-
-    // Panjang nyala mengikuti kecepatan kapal (0.1 sampai 1 dari panjang penuh)
     const fraksi = clamp(kapal.v / JENIS_AKTIF.lurus, 0.1, 1);
-
-    // Nyala kecil bergetar sedikit
     const nyalaKecil = clamp(0.9 + 0.1 * Math.sin(waktu * 0.02 + t.i), 0.8, 1);
-
-    // Kedip
     const kedip = clamp(0.8 + 0.1 * Math.sin(waktu * 0.03) + 0.1 * Math.sin(waktu * 0.047 + t.j), 0.6, 1);
-
-    // Goyang lemah
     const goyang = Math.sin(waktu * 0.015 + t.i * 0.5) * 0.4;
     const rot = Math.sin(waktu * 0.02 + t.j) * (0.7 * Math.PI / 180);
-
-    // Bagian atas dipotong: ambil dari bawah gambar sepanjang fraksi
     const tinggiSumber = img.naturalHeight * fraksi * nyalaKecil;
     const sy = img.naturalHeight - tinggiSumber;
     const tinggiTampil = tinggiSumber * skalaTinggi;
-
     const x = t.i * C - PX + PENDORONG_LEBAR / 2 + goyang;
     const y = t.j * C - PY + 48;
 
@@ -796,8 +789,10 @@ function gambarKapalPada(x, y, th, alpha, overlay, waktu = 0) {
 
         if (siapGambar(gbr.rangka)) ctx.drawImage(gbr.rangka, -PX, -PY, KW, KH);
 
-        const im = kapal.hidup ? gbr.intiHidup : gbr.intiMati;
-        if (siapGambar(im)) ctx.drawImage(im, INTI.i * C - PX, INTI.j * C - PY, INTI.w * C, INTI.h * C);
+        // Inti: satu gambar untuk hidup maupun mati (aset mati belum ada)
+        if (siapGambar(gbr.inti) && INTI.ada) {
+            ctx.drawImage(gbr.inti, -PX, -PY, KW, KH);
+        }
 
         if (siapGambar(gbr.sel)) {
             for (const c of cells.values()) {
@@ -809,7 +804,6 @@ function gambarKapalPada(x, y, th, alpha, overlay, waktu = 0) {
             for (const t of thrs) ctx.drawImage(gbr.utama, t.i * C - PX, t.j * C - PY, 32, 48);
         }
 
-        // Api hanya untuk kapal asli, saat ada dorongan
         if (alpha === 1 && kapal.gas) {
             for (const t of thrs) {
                 if (t.aktif) gambarApi(t, waktu);
@@ -921,6 +915,7 @@ function gambarUI() {
     const baris = [
         `Mode: ${mode === 'bangun' ? 'BANGUN' : 'UJI'}`,
         `Jenis aktif: kruiser`,
+        `Inti: ${INTI.ada ? `(${INTI.i},${INTI.j}) ${INTI.w}x${INTI.h}` : 'TIDAK TERBACA'}`,
         `Sambung: ${kapal.tersambung}/${cells.size}`,
         `Massa: ${cells.size} ton`,
         `Utama aktif: ${aktif}/${thrs.length}`,
@@ -961,7 +956,6 @@ function gambarError() {
     ctx.restore();
 }
 
-// Apakah posisi kapal berada di dalam layar (dengan margin)
 function kapalDiLayar() {
     const sx = toSX(kapal.x), sy = toSY(kapal.y);
     const margin = 120;
@@ -969,7 +963,6 @@ function kapalDiLayar() {
            sy > -margin && sy < canvas.height + margin;
 }
 
-// Volume dan putar/jeda suara: hanya terdengar saat kapal bergerak dan terlihat
 function updateSuara() {
     const aktif = thrs.filter(t => t.aktif).length;
     const bisaBunyi = mode === 'uji' && kapal.hidup && aktif > 0 && kapal.v > 0.5 && kapalDiLayar();
@@ -1036,7 +1029,8 @@ function loop(now) {
 }
 
 function mulai() {
-    if (!gbr.rangka.complete || gbr.rangka.naturalWidth === 0) {
+    if (!gbr.rangka.complete || gbr.rangka.naturalWidth === 0 ||
+        !gbr.inti.complete || gbr.inti.naturalWidth === 0) {
         setTimeout(mulai, 100);
         return;
     }
