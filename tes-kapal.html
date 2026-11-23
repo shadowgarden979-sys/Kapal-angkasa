@@ -98,8 +98,17 @@ const BUSUR_LANGKAH = 0.1;
 const RADIUS_SENTUH_KAPAL = 80;
 const UJUNG_SENTUH = 90;
 
-// Inti: putaran pelan saat reaktor hidup (rad per ms)
-const INTI_PUTAR = 0.0008;
+// Bayangan: alpha berkurang saat kapal mendekat
+const BAYANGAN_ALPHA = 0.35;
+const BAYANGAN_JARAK_DEKAT = 16;     // px: di bawah ini bayangan hampir hilang
+const BAYANGAN_JARAK_JAUH = 160;     // px: di atas ini bayangan penuh
+
+// Suara
+const SFX_SRC = 'suara-pendorong.mp3';
+const SFX_VOLUME_DASAR = 0.4;
+const SFX_FADE_DETIK = 0.4;
+const FAKTOR_JARAK = 2;              // suara mulai terdengar pada 2x ukuran maks kapal
+const SFX_VOLUME_SAAT_BELOK = 0.85;
 
 // ==========================================
 // 2. STATUS
@@ -124,17 +133,13 @@ let kapal = {
     seg: 0,
     hidup: false, status: '-', tersambung: 0, gas: false,
     koreksi: 0,
-    api: 0            // intensitas api 0..1, meredup saat rem
+    api: 0
 };
 
-// Suara pendorong: dua elemen bergantian (crossfade) agar sambungan loop tidak terpotong
-const SFX_SRC = 'suara-pendorong.mp3';
-const SFX_VOLUME_DASAR = 0.4;
-const SFX_FADE_DETIK = 0.4;          // durasi crossfade di ujung klip (detik)
 const sfxA = new Audio(SFX_SRC);
 const sfxB = new Audio(SFX_SRC);
-let sfxAktif = sfxA;                 // elemen yang sedang dominan
-let sfxMulai = false;                // sudah dimulai atau belum
+let sfxAktif = sfxA;
+let sfxMulai = false;
 [sfxA, sfxB].forEach(s => { s.preload = 'auto'; s.volume = 0; });
 
 // ==========================================
@@ -249,8 +254,6 @@ function initKapal() {
     }
 }
 
-// Rumah pendorong: selatan inti, dalam kolom 50% batas jenis, tidak menimpa apa pun,
-// bersisian dengan kerangka atau inti, dan jumlah belum melewati batas jenis.
 function bolehTaruhPendorong(ai, aj) {
     const d = DEF.utama;
     if (!INTI.ada) return false;
@@ -626,7 +629,6 @@ function kendali(dt) {
         k.th += clamp(err, -maks, maks);
     }
 
-    // Api ikut kecepatan, tetap tampil selama kapal masih bergerak
     k.api = clamp(k.v / JENIS_AKTIF.lurus, 0, 1);
     k.gas = k.v > 0.5;
     k.status = besarErr > AMBANG_BELOK ? 'belok' : (k.koreksi !== 0 ? 'koreksi' : 'lurus');
@@ -670,7 +672,6 @@ function konfirm() {
     mode = 'uji'; kapal.hidup = true;
     kamera.skala = 1; kamera.x = kapal.x; kamera.y = kapal.y;
     hapusAktif = false; seret = null; pilihKapal = false; draftPts = [];
-    // Membuka kunci audio lewat interaksi tombol OK
     sfxA.play().then(() => sfxA.pause()).catch(() => {});
     sfxB.play().then(() => sfxB.pause()).catch(() => {});
 }
@@ -817,7 +818,7 @@ function gambarApi(t, waktu) {
     ctx.restore();
 }
 
-// Versi redup inti: dibuat sekali dari gambar inti hidup (abu-abu, gelap)
+// Versi redup inti: dibuat sekali dari gambar inti hidup
 let intiRedup = null;
 function siapkanIntiRedup() {
     if (intiRedup || !siapGambar(gbr.inti)) return;
@@ -839,13 +840,10 @@ function gambarKapalPada(x, y, th, alpha, overlay, waktu = 0) {
 
         if (siapGambar(gbr.rangka)) ctx.drawImage(gbr.rangka, -PX, -PY, KW, KH);
 
-        // Inti: hidup berputar pelan, mati tampil redup
+        // Inti tampil statis: hidup asli, mati versi redup
         if (INTI.ada) {
             if (kapal.hidup && siapGambar(gbr.inti)) {
-                ctx.save();
-                ctx.rotate(performance.now() * INTI_PUTAR);
                 ctx.drawImage(gbr.inti, -PX, -PY, KW, KH);
-                ctx.restore();
             } else {
                 siapkanIntiRedup();
                 if (intiRedup) ctx.drawImage(intiRedup, -PX, -PY, KW, KH);
@@ -862,7 +860,6 @@ function gambarKapalPada(x, y, th, alpha, overlay, waktu = 0) {
             for (const t of thrs) ctx.drawImage(gbr.utama, t.i * C - PX, t.j * C - PY, 32, 48);
         }
 
-        // Api tampil selama kapal masih bergerak (termasuk saat rem)
         if (alpha === 1 && kapal.api > 0.02) {
             for (const t of thrs) {
                 if (t.aktif) gambarApi(t, waktu);
@@ -908,6 +905,14 @@ function gambarJalur() {
     }
 }
 
+// Bayangan: alpha berkurang saat kapal mendekat, supaya kapal yang datang menutupinya
+function alphaBayangan() {
+    if (!kapal.target) return BAYANGAN_ALPHA;
+    const jarak = dist(kapal, kapal.target);
+    const f = clamp((jarak - BAYANGAN_JARAK_DEKAT) / (BAYANGAN_JARAK_JAUH - BAYANGAN_JARAK_DEKAT), 0, 1);
+    return BAYANGAN_ALPHA * f;
+}
+
 function gambarBayangan() {
     if (mode !== 'uji') return;
     if (sedangGambar()) {
@@ -915,12 +920,12 @@ function gambarBayangan() {
         const last = list[list.length - 1];
         const prev = list.length >= 2 ? list[list.length - 2] : { x: kapal.x, y: kapal.y };
         const th = (last.x === prev.x && last.y === prev.y) ? kapal.th : arahKe(last.x - prev.x, last.y - prev.y);
-        gambarKapalPada(last.x, last.y, th, 0.35, false);
+        gambarKapalPada(last.x, last.y, th, BAYANGAN_ALPHA, false);
     }
     if (kapal.target) {
-        gambarKapalPada(kapal.target.x, kapal.target.y, kapal.target.th, 0.35, false);
+        gambarKapalPada(kapal.target.x, kapal.target.y, kapal.target.th, alphaBayangan(), false);
     } else if (pilihKapal && !sedangGambar()) {
-        gambarKapalPada(kapal.x, kapal.y, kapal.th, 0.35, false);
+        gambarKapalPada(kapal.x, kapal.y, kapal.th, BAYANGAN_ALPHA, false);
     }
 }
 
@@ -1015,29 +1020,30 @@ function gambarError() {
     ctx.restore();
 }
 
-function kapalDiLayar() {
-    const sx = toSX(kapal.x), sy = toSY(kapal.y);
-    const margin = 120;
-    return sx > -margin && sx < canvas.width + margin &&
-           sy > -margin && sy < canvas.height + margin;
-}
-
-// Suara: volume mengikuti kecepatan dan zoom. Tidak ada pause/play per frame.
-// Dua elemen bergantian: saat sisa durasi kecil, elemen satunya mulai dari awal (crossfade).
+// Suara berdasarkan jarak kapal ke kamera, skala ke ukuran maks kapal
 function updateSuara() {
     const aktif = thrs.filter(t => t.aktif).length;
-    const bisaBunyi = mode === 'uji' && kapal.hidup && aktif > 0 && kapal.v > 0.5 && kapalDiLayar();
+    const bisaBunyi = mode === 'uji' && kapal.hidup && aktif > 0 && kapal.v > 0.5;
 
     if (!bisaBunyi) {
-        // Volume turun ke nol, audio tetap berjalan (tidak dipause)
         sfxA.volume = Math.max(0, sfxA.volume - 0.05);
         sfxB.volume = Math.max(0, sfxB.volume - 0.05);
         return;
     }
 
+    const ukuranMaks = JENIS_AKTIF.batasSel * C;
+    const jarakMulai = ukuranMaks * FAKTOR_JARAK;
+    const jarakDekat = ukuranMaks * 0.5;
+
+    const jarakDunia = Math.hypot(kapal.x - kamera.x, kapal.y - kamera.y);
+    const jarakLayar = jarakDunia * kamera.skala;
+    const faktorJarak = 1 - clamp((jarakLayar - jarakDekat) / (jarakMulai - jarakDekat), 0, 1);
+
     const fraksi = clamp(kapal.v / JENIS_AKTIF.lurus, 0, 1);
-    const zoomFaktor = clamp(kamera.skala / SKALA_BANGUN, 0.25, 2.5);
-    const volTarget = clamp(SFX_VOLUME_DASAR * fraksi * zoomFaktor, 0, 1);
+    const pengaliBelok = kapal.status === 'belok' ? SFX_VOLUME_SAAT_BELOK : 1;
+    const pengaliRem = kapal.status === 'rem' ? fraksi : 1;
+
+    const volTarget = clamp(SFX_VOLUME_DASAR * fraksi * faktorJarak * pengaliBelok * pengaliRem, 0, 1);
 
     if (!sfxMulai) {
         sfxMulai = true;
@@ -1046,7 +1052,6 @@ function updateSuara() {
         sfxA.play().catch(() => {});
     }
 
-    // Crossfade: di ujung klip, elemen lain dimulai dari awal sambil elemen ini memudar
     const sisa = sfxAktif.duration - sfxAktif.currentTime;
     if (isFinite(sisa) && sisa < SFX_FADE_DETIK) {
         const lain = sfxAktif === sfxA ? sfxB : sfxA;
@@ -1063,14 +1068,15 @@ function updateSuara() {
     kedua.volume = Math.max(0, kedua.volume - 0.05);
 }
 
+// Urutan gambar: bayangan dulu, lalu kapal asli di atasnya
 function gambar() {
     ctx.fillStyle = '#07080d';
     ctx.fillRect(0, 0, canvas.width, canvas.height);
 
     coba('kisi', gambarKisi);
     coba('jalur', gambarJalur);
-    coba('kapal', gambarKapal);
     coba('bayangan', gambarBayangan);
+    coba('kapal', gambarKapal);
 
     if (mode === 'bangun') {
         coba('seret', gambarSeret);
