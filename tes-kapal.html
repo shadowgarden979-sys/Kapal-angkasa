@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-<title>Tes Kapal - Acuan Inti</title>
+<title>Tes Kapal - Final</title>
 <style>
 body,html{margin:0;padding:0;width:100%;height:100%;overflow:hidden;background:#07080d;font-family:monospace}
 canvas{display:block;touch-action:none}
@@ -189,7 +189,7 @@ function posisi(e) {
     const r = canvas.getBoundingClientRect();
     return { x: e.clientX - r.left, y: e.clientY - r.top };
 }
-// Koordinat sel grid -> koordinat dunia kapal (relatif pusat kerangka, sebelum offset inti)
+// Layar -> koordinat sel grid (relatif pusat kerangka)
 function layarKeKisi(sx, sy) {
     const wx = dariSX(sx) - kapal.x + OFS_INTI.x, wy = dariSY(sy) - kapal.y + OFS_INTI.y;
     return { i: Math.floor((wx + PX) / C), j: Math.floor((wy + PY) / C) };
@@ -238,12 +238,12 @@ function bacaInti() {
     return { i: minI, j: minJ, w: maxI - minI + 1, h: maxJ - minJ + 1, ada: true };
 }
 
-// Offset pusat inti dari pusat kerangka, dihitung dari data INTI (bukan tebakan)
 function hitungOfsetInti() {
     if (!INTI.ada) return { x: 0, y: 0 };
-    const pusatX = INTI.i * C + (INTI.w * C) / 2 - PX;
-    const pusatY = INTI.j * C + (INTI.h * C) / 2 - PY;
-    return { x: pusatX, y: pusatY };
+    return {
+        x: INTI.i * C + (INTI.w * C) / 2 - PX,
+        y: INTI.j * C + (INTI.h * C) / 2 - PY
+    };
 }
 
 function initKapal() {
@@ -671,8 +671,7 @@ function hentikanSfx() {
     sfxMulai = false;
 }
 
-// Mode bangun: kapal ditaruh dengan pusat kerangka di (0,0) dunia, inti ada di OFS_INTI.
-// Karena kapal.x/y adalah inti, kapal.x/y = OFS_INTI.
+// Mode bangun: pusat kerangka di (0,0) dunia, kapal.x/y = posisi inti (OFS_INTI)
 function masukBangun() {
     mode = 'bangun'; kapal.hidup = false; resetGerak();
     kapal.x = OFS_INTI.x; kapal.y = OFS_INTI.y; kapal.th = 0;
@@ -718,8 +717,7 @@ canvas.addEventListener('pointerdown', aman('pointerdown', e => {
         ptr.aksi = 'sambung'; draftPts = [{ x: kapal.target.x, y: kapal.target.y }]; return;
     }
 
-    // Sentuh kapal memakai area kerangka, bukan titik inti. Pusat area = inti (kapal.x/y)
-    // digeser sejauh OFS_INTI karena pusat kerangka berada di (kapal.x - OFS_INTI.x, kapal.y - OFS_INTI.y).
+    // Sentuh kapal memakai area kerangka (pusatnya = inti digeser OFS_INTI)
     const pusatKerangkaX = toSX(kapal.x - OFS_INTI.x), pusatKerangkaY = toSY(kapal.y - OFS_INTI.y);
     if (Math.hypot(p.x - pusatKerangkaX, p.y - pusatKerangkaY) < RADIUS_SENTUH_KAPAL) {
         ptr.aksi = 'kapal'; draftPts = []; return;
@@ -844,8 +842,7 @@ function siapkanIntiRedup() {
     intiRedup = c;
 }
 
-// Gambar kapal. (x, y) adalah posisi INTI. Gambar digeser sejauh OFS_INTI
-// supaya pusat inti jatuh tepat di (x, y).
+// (x, y) adalah posisi INTI. Gambar digeser OFS_INTI supaya pusat inti jatuh di (x, y).
 function gambarKapalPada(x, y, th, alpha, overlay, waktu = 0) {
     ctx.save();
     try {
@@ -954,8 +951,8 @@ function gambarSeret() {
         const d = DEF[seret.id];
         const ok = bolehTaruh(seret.id, a.i, a.j);
         const s = kamera.skala;
-        const x0 = toSX(a.i * C - PX + OFS_INTI.x - kapal.x + kapal.x - OFS_INTI.x);
-        const y0 = toSY(a.j * C - PY + OFS_INTI.y - kapal.y + kapal.y - OFS_INTI.y);
+        const x0 = toSX(a.i * C - PX + kapal.x - OFS_INTI.x - kapal.x + OFS_INTI.x);
+        const y0 = toSY(a.j * C - PY);
         const w = d.w * C * s, h = d.h * C * s;
         ctx.fillStyle = ok ? 'rgba(74,222,128,0.35)' : 'rgba(248,113,113,0.35)';
         ctx.fillRect(x0, y0, w, h);
@@ -974,6 +971,46 @@ function gambarSeret() {
         ctx.drawImage(img, seret.x - iw / 2, seret.y - 70 - ih / 2, iw, ih);
         ctx.globalAlpha = 1;
     }
+}
+
+// Penunjuk tepi layar: arah dan jarak ke inti kapal saat di luar layar
+function gambarPenanda() {
+    if (mode !== 'uji' || !kapal.hidup) return;
+
+    const sx = toSX(kapal.x), sy = toSY(kapal.y);
+    const margin = 40;
+    if (sx > margin && sx < canvas.width - margin && sy > margin && sy < canvas.height - margin) return;
+
+    const cx = canvas.width / 2, cy = canvas.height / 2;
+    const ang = Math.atan2(sy - cy, sx - cx);
+
+    const dx = Math.cos(ang), dy = Math.sin(ang);
+    const tX = dx !== 0 ? ((dx > 0 ? canvas.width - margin : margin) - cx) / dx : Infinity;
+    const tY = dy !== 0 ? ((dy > 0 ? canvas.height - margin : margin) - cy) / dy : Infinity;
+    const t = Math.min(tX, tY);
+    const px = cx + dx * t, py = cy + dy * t;
+
+    ctx.save();
+    ctx.translate(px, py);
+    ctx.rotate(ang);
+    ctx.fillStyle = 'rgba(253,224,71,0.9)';
+    ctx.beginPath();
+    ctx.moveTo(10, 0);
+    ctx.lineTo(-7, -7);
+    ctx.lineTo(-7, 7);
+    ctx.closePath();
+    ctx.fill();
+    ctx.restore();
+
+    const jarakDunia = dist(kapal, { x: kamera.x, y: kamera.y });
+    const teksJarak = jarakDunia < 1000
+        ? `${Math.round(jarakDunia).toLocaleString('id-ID')} m`
+        : `${(jarakDunia / 1000).toFixed(1).replace('.', ',')} km`;
+    ctx.fillStyle = '#fde68a';
+    ctx.font = '12px monospace';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(teksJarak, px - dx * 26, py - dy * 26);
 }
 
 function gambarTombolKotak(b, label, aktif) {
@@ -1105,6 +1142,7 @@ function gambar() {
 
     gambarTombolKotak(tombolZoomIn(), '+', false);
     gambarTombolKotak(tombolZoomOut(), '−', false);
+    coba('penanda', gambarPenanda);
     coba('ui', gambarUI);
 }
 
