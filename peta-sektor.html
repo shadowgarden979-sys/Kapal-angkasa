@@ -26,7 +26,6 @@ function resize() {
 window.addEventListener('resize', resize);
 resize();
 
-// Satuan dunia: km. Dunia 400 x 400 km, berpusat di (0, 0)
 const SEED = 979;
 const JUMLAH_SEKTOR = 50;
 const DUNIA_HALF = 200;
@@ -34,13 +33,13 @@ const DUNIA_W = DUNIA_HALF * 2;
 const JARAK_MIN_SEKTOR = 30;
 const SEBARAN_TITIK = 170;
 const NOISE_AMPLITUDO = 26;
-const NETRAL_JARAK = 115;             // km, sektor lebih jauh dari semua markas = netral
-const JUMLAH_FAKSI = 3;               // faksi di luar netral
+const NETRAL_JARAK = 115;
+const JUMLAH_FAKSI = 3;
 const SKALA_MIN = 0.2, SKALA_MAX = 12, SKALA_LANGKAH = 1.25;
-const SKALA_FADE_MULAI = 0.6;         // di bawah ini hanya lapisan faksi
-const SKALA_FADE_SELESAI = 1.0;       // di atas ini hanya lapisan sektor
+const SKALA_FADE_MULAI = 0.6;
+const SKALA_FADE_SELESAI = 1.0;
+const REDUP_LAIN = 0.2;               // kecerahan wilayah lain saat faksi dipilih
 
-// Indeks 0 = netral. 1..3 = faksi dengan markas
 const FAKSI = [
     { nama: 'Netral',           rgb: [120, 130, 150], markas: -1 },
     { nama: 'Aliansi Biru',     rgb: [60, 140, 255],  markas: -1 },
@@ -75,7 +74,6 @@ function vnoise(x, y) {
     return a + (b - a) * u + (c - a) * v + (a - b - c + d) * u * v;
 }
 
-// Gangguan tepi: satu medan untuk semua sektor, batas bersama selalu sama di kedua sisi
 function gangguan(xKm, yKm) {
     const n = vnoise(xKm / 22, yKm / 22) * 0.6 + vnoise(xKm / 9, yKm / 9) * 0.4;
     return (n - 0.5) * 2 * NOISE_AMPLITUDO;
@@ -99,7 +97,6 @@ while (sektor.length < JUMLAH_SEKTOR && percobaan < 200000) {
     if (cukup) sektor.push({ x, y });
 }
 
-// Markas: sektor dipilih berurutan, selalu yang paling jauh dari markas yang sudah ada
 const markasIdx = [0];
 while (markasIdx.length < JUMLAH_FAKSI) {
     let best = -1, bestJarak = -1;
@@ -113,7 +110,6 @@ while (markasIdx.length < JUMLAH_FAKSI) {
 }
 markasIdx.forEach((idx, f) => { FAKSI[f + 1].markas = idx; });
 
-// Kepemilikan: markas terdekat. Jauh dari semua markas = netral
 sektor.forEach((s, i) => {
     s.id = 'S-' + String(i + 1).padStart(2, '0');
     let bestF = -1, bestD = Infinity;
@@ -173,7 +169,6 @@ function bangunWilayah() {
             const batasSektor = kananS !== pemilik[p] || bawahS !== pemilik[p];
             const batasFaksi = kananF !== fk || bawahF !== fk;
 
-            // Lapisan sektor: warna faksi, garis tipis antar sektor
             sd[o] = rgb[0]; sd[o + 1] = rgb[1]; sd[o + 2] = rgb[2];
             sd[o + 3] = fk === 0 ? 40 : 70;
             if (batasSektor) {
@@ -182,7 +177,6 @@ function bangunWilayah() {
                 sd[o + 3] = sameFaksi ? 60 : 160;
             }
 
-            // Lapisan faksi: warna faksi, garis hanya di batas antar faksi
             fd[o] = rgb[0]; fd[o + 1] = rgb[1]; fd[o + 2] = rgb[2];
             fd[o + 3] = fk === 0 ? 35 : 95;
             if (batasFaksi) {
@@ -198,8 +192,8 @@ function bangunWilayah() {
 // 5. KAMERA DAN INTERAKSI
 // ==========================================
 const kamera = { x: 0, y: 0, skala: 1 };
-let dipilih = -1;           // indeks sektor terpilih
-let dipilihFaksi = -1;      // indeks faksi terpilih (1..3)
+let dipilih = -1;
+let dipilihFaksi = -1;
 let tampilPesan = '';
 let pesanWaktu = 0;
 let tombolTeleport = [];
@@ -254,6 +248,22 @@ function faksiTerdekat(sx, sy, batas) {
     return best;
 }
 
+// Faksi di titik layar tertentu (dari wilayah yang tergambar)
+function faksiDiTitik(sx, sy) {
+    const xKm = dariSX(sx), yKm = dariSY(sy);
+    if (Math.abs(xKm) > DUNIA_HALF || Math.abs(yKm) > DUNIA_HALF) return -1;
+    let best = -1, bestSkor = Infinity;
+    const g = gangguan(xKm, yKm);
+    for (let i = 0; i < sektor.length; i++) {
+        const d = Math.hypot(xKm - sektor[i].x, yKm - sektor[i].y) + g;
+        if (d < bestSkor) { bestSkor = d; best = i; }
+    }
+    return sektor[best].faksi;
+}
+
+function dariSX(sx) { return (sx - canvas.width / 2) / kamera.skala + kamera.x; }
+function dariSY(sy) { return (sy - canvas.height / 2) / kamera.skala + kamera.y; }
+
 canvas.addEventListener('pointerdown', e => {
     e.preventDefault();
     const p = posisi(e);
@@ -290,11 +300,14 @@ canvas.addEventListener('pointerup', e => {
             if (tp) {
                 tampilPesan = `Teleport ke ${sektor[tp.idx].id} (demo, belum terhubung ke kapal)`;
                 pesanWaktu = performance.now();
-            } else {
-                dipilih = -1; dipilihFaksi = -1;
-                const f = fA > 0.3 ? faksiTerdekat(p.x, p.y, 22) : -1;
-                if (f > 0) dipilihFaksi = f;
-                else if (sA > 0.3) dipilih = sektorTerdekat(p.x, p.y, 18);
+            } else if (fA > 0.3) {
+                // Zoom standar: ketuk wilayah faksi untuk menegaskan, ketuk lagi untuk membatalkan
+                const f = faksiDiTitik(p.x, p.y);
+                dipilih = -1;
+                dipilihFaksi = (f > 0 && f !== dipilihFaksi) ? f : -1;
+            } else if (sA > 0.3) {
+                dipilih = sektorTerdekat(p.x, p.y, 18);
+                dipilihFaksi = -1;
             }
         }
     }
@@ -319,6 +332,7 @@ function gambarLatar() {
     ctx.stroke();
 }
 
+// Lapisan faksi: saat ada faksi terpilih, faksi lain diredupkan ke REDUP_LAIN
 function gambarWilayah(sA, fA) {
     const x0 = toSX(-DUNIA_HALF), y0 = toSY(-DUNIA_HALF);
     const ukuran = DUNIA_W * kamera.skala;
@@ -338,26 +352,6 @@ function gambarWilayah(sA, fA) {
     ctx.setLineDash([]);
 }
 
-function gambarTeleport() {
-    const stasiunAktif = sektor.map((s, i) => i).filter(i => sektor[i].stasiun && sektor[i].dijelajahi);
-    ctx.globalAlpha = 0.5;
-    ctx.strokeStyle = '#fde68a';
-    ctx.lineWidth = 1.5;
-    ctx.setLineDash([5, 5]);
-    for (let a = 0; a < stasiunAktif.length; a++) {
-        for (let b = a + 1; b < stasiunAktif.length; b++) {
-            const A = sektor[stasiunAktif[a]], B = sektor[stasiunAktif[b]];
-            ctx.beginPath();
-            ctx.moveTo(toSX(A.x), toSY(A.y));
-            ctx.lineTo(toSX(B.x), toSY(B.y));
-            ctx.stroke();
-        }
-    }
-    ctx.setLineDash([]);
-    ctx.globalAlpha = 1;
-}
-
-// Lapisan sektor: titik kecil dan label
 function gambarTitikSektor(sA) {
     ctx.globalAlpha = sA;
     sektor.forEach((s, i) => {
@@ -402,7 +396,6 @@ function gambarTitikSektor(sA) {
     ctx.globalAlpha = 1;
 }
 
-// Lapisan faksi: markas sebagai penanda utama
 function gambarMarkas(fA) {
     ctx.globalAlpha = fA;
     for (let f = 1; f <= JUMLAH_FAKSI; f++) {
@@ -497,30 +490,6 @@ function gambarPanel(sA) {
         ctx.fillText(`Posisi: ${pilih.x.toFixed(0)}, ${pilih.y.toFixed(0)} km`, px + 10, py + 30);
         ctx.fillText(`Status: ${pilih.dijelajahi ? 'sudah dijelajahi' : 'belum dijelajahi'}`, px + 10, py + 46);
         ctx.fillText(`Stasiun: ${pilih.stasiun ? (pilih.dijelajahi ? 'aktif' : 'ada, belum terbaca') : 'tidak ada'}`, px + 10, py + 62);
-
-        if (pilih.dijelajahi && pilih.stasiun) {
-            ctx.fillStyle = '#fde68a';
-            ctx.fillText('Teleport ke:', px + 10, py + 82);
-            const tujuan = sektor.map((s, i) => ({ s, i }))
-                .filter(o => o.i !== dipilih && o.s.dijelajahi && o.s.stasiun);
-            let bx = px + 10, by = py + 98;
-            for (const o of tujuan) {
-                const w = 70, h = 18;
-                if (bx + w > px + pw - 10) { bx = px + 10; by += h + 4; }
-                ctx.fillStyle = 'rgba(253,224,71,0.15)';
-                ctx.fillRect(bx, by, w, h);
-                ctx.strokeStyle = '#fde68a';
-                ctx.strokeRect(bx + 0.5, by + 0.5, w - 1, h - 1);
-                ctx.fillStyle = '#fde68a';
-                ctx.textAlign = 'center';
-                ctx.textBaseline = 'middle';
-                ctx.fillText(o.s.id, bx + w / 2, by + h / 2);
-                ctx.textAlign = 'left';
-                ctx.textBaseline = 'top';
-                tombolTeleport.push({ x: bx, y: by, w, h, idx: o.i });
-                bx += w + 6;
-            }
-        }
     }
 
     for (const b of tombolKanan()) {
@@ -552,7 +521,6 @@ function gambar() {
     const fA = 1 - sA;
     gambarLatar();
     gambarWilayah(sA, fA);
-    gambarTeleport();
     gambarTitikSektor(sA);
     gambarMarkas(fA);
     gambarPanel(sA);
