@@ -38,7 +38,7 @@ const JUMLAH_FAKSI = 3;
 const SKALA_MIN = 0.2, SKALA_MAX = 12, SKALA_LANGKAH = 1.25;
 const SKALA_FADE_MULAI = 0.6;
 const SKALA_FADE_SELESAI = 1.0;
-const REDUP_LAIN = 0.2;               // kecerahan wilayah lain saat faksi dipilih
+const REDUP_LAIN = 0.2;               // kecerahan faksi lain saat ada faksi terpilih
 
 const FAKSI = [
     { nama: 'Netral',           rgb: [120, 130, 150], markas: -1 },
@@ -124,12 +124,16 @@ sektor.forEach((s, i) => {
 });
 
 // ==========================================
-// 4. PETA WILAYAH (dua lapisan, dihitung sekali)
+// 4. PETA WILAYAH (per faksi dan per sektor, dihitung sekali)
 // ==========================================
 const sektorCanvas = document.createElement('canvas');
 const faksiCanvas = document.createElement('canvas');
 sektorCanvas.width = faksiCanvas.width = DUNIA_W;
 sektorCanvas.height = faksiCanvas.height = DUNIA_W;
+
+// Satu canvas per faksi: hanya piksel milik faksi itu yang terisi.
+// Dipakai untuk menggambar tiap faksi dengan kecerahan sendiri.
+const faksiLapisan = [];
 
 function bangunWilayah() {
     const pemilik = new Int16Array(DUNIA_W * DUNIA_W);
@@ -155,6 +159,13 @@ function bangunWilayah() {
     const fImg = faksiCanvas.getContext('2d').createImageData(DUNIA_W, DUNIA_W);
     const sd = sImg.data, fd = fImg.data;
 
+    for (let f = 0; f < FAKSI.length; f++) {
+        const c = document.createElement('canvas');
+        c.width = c.height = DUNIA_W;
+        faksiLapisan.push(c);
+    }
+    const lapisanImg = faksiLapisan.map(c => c.getContext('2d').createImageData(DUNIA_W, DUNIA_W));
+
     for (let py = 0; py < DUNIA_W; py++) {
         for (let px = 0; px < DUNIA_W; px++) {
             const p = py * DUNIA_W + px;
@@ -169,23 +180,33 @@ function bangunWilayah() {
             const batasSektor = kananS !== pemilik[p] || bawahS !== pemilik[p];
             const batasFaksi = kananF !== fk || bawahF !== fk;
 
+            // Lapisan sektor
             sd[o] = rgb[0]; sd[o + 1] = rgb[1]; sd[o + 2] = rgb[2];
             sd[o + 3] = fk === 0 ? 40 : 70;
             if (batasSektor) {
-                const sameFaksi = !batasFaksi;
                 sd[o] = 235; sd[o + 1] = 240; sd[o + 2] = 250;
-                sd[o + 3] = sameFaksi ? 60 : 160;
+                sd[o + 3] = batasFaksi ? 160 : 60;
             }
 
+            // Lapisan faksi gabungan (dipakai saat zoom standar, tanpa redup)
             fd[o] = rgb[0]; fd[o + 1] = rgb[1]; fd[o + 2] = rgb[2];
             fd[o + 3] = fk === 0 ? 35 : 95;
             if (batasFaksi) {
                 fd[o] = 240; fd[o + 1] = 245; fd[o + 2] = 255; fd[o + 3] = 230;
             }
+
+            // Lapisan per faksi: hanya piksel milik faksi ini
+            const li = lapisanImg[fk].data;
+            li[o] = fd[o]; li[o + 1] = fd[o + 1]; li[o + 2] = fd[o + 2];
+            li[o + 3] = fd[o + 3];
+            if (batasFaksi) {
+                // Batas luar wilayah ditebalkan saat disorot (dihitung di gambar)
+            }
         }
     }
     sektorCanvas.getContext('2d').putImageData(sImg, 0, 0);
     faksiCanvas.getContext('2d').putImageData(fImg, 0, 0);
+    faksiLapisan.forEach((c, f) => c.getContext('2d').putImageData(lapisanImg[f], 0, 0));
 }
 
 // ==========================================
@@ -206,6 +227,8 @@ kamera.skala = skalaAwal();
 
 function toSX(xKm) { return (xKm - kamera.x) * kamera.skala + canvas.width / 2; }
 function toSY(yKm) { return (yKm - kamera.y) * kamera.skala + canvas.height / 2; }
+function dariSX(sx) { return (sx - canvas.width / 2) / kamera.skala + kamera.x; }
+function dariSY(sy) { return (sy - canvas.height / 2) / kamera.skala + kamera.y; }
 function clamp(v, a, b) { return Math.max(a, Math.min(b, v)); }
 
 function posisi(e) {
@@ -238,17 +261,7 @@ function sektorTerdekat(sx, sy, batas) {
     return best;
 }
 
-function faksiTerdekat(sx, sy, batas) {
-    let best = -1, bestJarak = batas;
-    for (let f = 1; f <= JUMLAH_FAKSI; f++) {
-        const m = sektor[FAKSI[f].markas];
-        const d = Math.hypot(toSX(m.x) - sx, toSY(m.y) - sy);
-        if (d < bestJarak) { bestJarak = d; best = f; }
-    }
-    return best;
-}
-
-// Faksi di titik layar tertentu (dari wilayah yang tergambar)
+// Faksi di titik layar (dari wilayah yang tergambar)
 function faksiDiTitik(sx, sy) {
     const xKm = dariSX(sx), yKm = dariSY(sy);
     if (Math.abs(xKm) > DUNIA_HALF || Math.abs(yKm) > DUNIA_HALF) return -1;
@@ -260,9 +273,6 @@ function faksiDiTitik(sx, sy) {
     }
     return sektor[best].faksi;
 }
-
-function dariSX(sx) { return (sx - canvas.width / 2) / kamera.skala + kamera.x; }
-function dariSY(sy) { return (sy - canvas.height / 2) / kamera.skala + kamera.y; }
 
 canvas.addEventListener('pointerdown', e => {
     e.preventDefault();
@@ -332,19 +342,29 @@ function gambarLatar() {
     ctx.stroke();
 }
 
-// Lapisan faksi: saat ada faksi terpilih, faksi lain diredupkan ke REDUP_LAIN
+// Zoom standar: wilayah per faksi. Faksi terpilih utuh, faksi lain redup ke REDUP_LAIN.
+// Zoom dekat: lapisan sektor.
 function gambarWilayah(sA, fA) {
     const x0 = toSX(-DUNIA_HALF), y0 = toSY(-DUNIA_HALF);
     const ukuran = DUNIA_W * kamera.skala;
+
     if (fA > 0.01) {
-        ctx.globalAlpha = fA;
-        ctx.drawImage(faksiCanvas, x0, y0, ukuran, ukuran);
+        for (let f = 1; f < FAKSI.length; f++) {
+            let kecerahan = 1;
+            if (dipilihFaksi > 0 && f !== dipilihFaksi) kecerahan = REDUP_LAIN;
+            ctx.globalAlpha = fA * kecerahan;
+            ctx.drawImage(faksiLapisan[f], x0, y0, ukuran, ukuran);
+        }
+        // Netral: sama redupnya dengan faksi lain saat ada pilihan
+        ctx.globalAlpha = fA * (dipilihFaksi > 0 ? REDUP_LAIN : 1);
+        ctx.drawImage(faksiLapisan[0], x0, y0, ukuran, ukuran);
     }
     if (sA > 0.01) {
         ctx.globalAlpha = sA;
         ctx.drawImage(sektorCanvas, x0, y0, ukuran, ukuran);
     }
     ctx.globalAlpha = 1;
+
     ctx.strokeStyle = 'rgba(253,224,71,0.35)';
     ctx.lineWidth = 1;
     ctx.setLineDash([6, 6]);
@@ -403,7 +423,9 @@ function gambarMarkas(fA) {
         const sx = toSX(m.x), sy = toSY(m.y);
         const warna = FAKSI[f].rgb;
         const r = f === dipilihFaksi ? 13 : 10;
+        const redup = dipilihFaksi > 0 && f !== dipilihFaksi ? REDUP_LAIN : 1;
 
+        ctx.globalAlpha = fA * redup;
         ctx.beginPath();
         ctx.arc(sx, sy, r + 6, 0, Math.PI * 2);
         ctx.fillStyle = `rgba(${warna[0]},${warna[1]},${warna[2]},0.25)`;
