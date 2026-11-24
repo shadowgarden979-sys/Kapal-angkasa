@@ -6,10 +6,12 @@
 <title>Peta Antar Sektor</title>
 <style>
 body,html{margin:0;padding:0;width:100%;height:100%;overflow:hidden;background:#07080d;font-family:monospace}
-canvas{display:block;touch-action:none}
+#bintang{position:fixed;left:0;top:0;z-index:0;pointer-events:none}
+#gameCanvas{position:fixed;left:0;top:0;z-index:1;touch-action:none}
 </style>
 </head>
 <body>
+<canvas id="bintang"></canvas>
 <canvas id="gameCanvas"></canvas>
 
 <script>
@@ -18,6 +20,8 @@ canvas{display:block;touch-action:none}
 // ==========================================
 const canvas = document.getElementById('gameCanvas');
 const ctx = canvas.getContext('2d');
+const bgCanvas = document.getElementById('bintang');
+const bgCtx = bgCanvas.getContext('2d');
 
 const SEED = 979;
 const JUMLAH_SEKTOR = 50;
@@ -33,6 +37,11 @@ const SKALA_MIN = 0.2, SKALA_MAX = 12, SKALA_LANGKAH = 1.25;
 const SKALA_FADE_MULAI = 0.6, SKALA_FADE_SELESAI = 1.0;
 const REDUP_LAIN = 0.2;
 
+// Latar bintang
+const BINTANG_N = 180;
+const BINTANG_HZ = 10;                // pembaruan bintang per detik (bukan 60)
+const GRID_ALPHA = 0.05;
+
 const FAKSI = [
     { nama: 'Netral',           rgb: [120, 130, 150], markas: -1 },
     { nama: 'Aliansi Biru',     rgb: [60, 140, 255],  markas: -1 },
@@ -46,8 +55,8 @@ let simSX = null, simSY = null;
 
 // Status pilihan dan kamera
 const kamera = { x: 0, y: 0, skala: 1 };
-let dipilih = -1;          // indeks sektor terpilih (zoom sektor)
-let dipilihFaksi = -1;     // indeks faksi terpilih (zoom faksi)
+let dipilih = -1;
+let dipilihFaksi = -1;
 let ptr = null;
 
 // ==========================================
@@ -77,7 +86,7 @@ function vnoise(x, y) {
     return a + (b - a) * u + (c - a) * v + (a - b - c + d) * u * v;
 }
 
-// [DATA] Goyangan simpul dipanggil sekali per simpul saat peta dibuat, bukan per piksel
+// [DATA] Goyangan simpul dipanggil sekali per simpul saat peta dibuat
 function goyang(x, y) {
     const dx = (vnoise(x / JITTER_SKALA, y / JITTER_SKALA) - 0.5) * 2 * JITTER_KM;
     const dy = (vnoise((x + 311) / JITTER_SKALA, (y + 977) / JITTER_SKALA) - 0.5) * 2 * JITTER_KM;
@@ -89,7 +98,7 @@ function rgbaStr(rgb, a) { return `rgba(${rgb[0]},${rgb[1]},${rgb[2]},${a})`; }
 function dalamKotak(p, k) { return p.x >= k.x && p.x <= k.x + k.w && p.y >= k.y && p.y <= k.y + k.h; }
 function posisi(e) { const r = canvas.getBoundingClientRect(); return { x: e.clientX - r.left, y: e.clientY - r.top }; }
 
-// [LOGIKA] Render dijadwalkan hanya saat ada perubahan, bukan tiap frame
+// [LOGIKA] Peta digambar hanya saat ada perubahan, bukan tiap frame
 function minta() {
     if (rafAktif) return;
     rafAktif = true;
@@ -97,7 +106,58 @@ function minta() {
 }
 
 // ==========================================
-// 3. SEKTOR DAN MARKAS (sama dengan prototipe)
+// 3. LATAR BINTANG (lapisan terpisah, 10 kali per detik)
+// ==========================================
+let bintang = [];
+let waktuBintangTerakhir = performance.now();
+
+function buatBintang() {
+    const r = mulberry32(4242);
+    bintang = [];
+    for (let i = 0; i < BINTANG_N; i++) {
+        bintang.push({
+            x: r(), y: r(),                      // posisi relatif (0..1), aman saat resize
+            r: 0.4 + r() * 1.2,                  // jari-jari piksel
+            vx: (r() - 0.5) * 6,                 // px/s
+            vy: (r() - 0.5) * 6,
+            ph: r() * Math.PI * 2,               // fase kedip
+            sp: 0.6 + r() * 1.4,                 // kecepatan kedip
+            base: 0.35 + r() * 0.5               // kecerahan dasar
+        });
+    }
+}
+
+// [RENDER] Lapisan bintang digambar ulang 10 kali per detik saja, dan dijeda saat tab tidak aktif
+function gambarBintang() {
+    const w = bgCanvas.width, h = bgCanvas.height;
+    if (!w || !h) return;
+
+    const now = performance.now();
+    const dt = Math.min(0.2, (now - waktuBintangTerakhir) / 1000);
+    waktuBintangTerakhir = now;
+    const t = now / 1000;
+
+    bgCtx.clearRect(0, 0, w, h);
+    for (const s of bintang) {
+        s.x += s.vx * dt / w;
+        s.y += s.vy * dt / h;
+        if (s.x < 0) s.x += 1; else if (s.x > 1) s.x -= 1;
+        if (s.y < 0) s.y += 1; else if (s.y > 1) s.y -= 1;
+
+        const a = s.base * (0.55 + 0.45 * Math.sin(t * s.sp + s.ph));
+        bgCtx.fillStyle = `rgba(220,230,255,${a.toFixed(3)})`;
+        bgCtx.beginPath();
+        bgCtx.arc(s.x * w, s.y * h, s.r, 0, Math.PI * 2);
+        bgCtx.fill();
+    }
+}
+
+setInterval(() => {
+    if (!document.hidden) gambarBintang();
+}, 1000 / BINTANG_HZ);
+
+// ==========================================
+// 4. SEKTOR DAN MARKAS (sama dengan versi sebelumnya)
 // ==========================================
 const rnd = mulberry32(SEED);
 const sektor = [];
@@ -131,17 +191,16 @@ sektor.forEach((s, i) => {
     });
     s.faksi = bestD > NETRAL_JARAK ? 0 : bestF + 1;
     s.markas = markasIdx.includes(i);
-    s.dijelajahi = s.markas || i % 7 === 0;   // placeholder, bukan aturan permainan
+    s.dijelajahi = s.markas || i % 7 === 0;   // placeholder
     s.stasiun = s.markas || i % 9 === 4;      // placeholder
 });
 
 // ==========================================
-// 4. WILAYAH: SIMPUL DAN SISI (dihitung sekali)
+// 5. WILAYAH: SIMPUL DAN SISI (dihitung sekali)
 // ==========================================
-let simpul = [];     // { x, y, tepi }
-let tepiList = [];   // { a, b, s: [indeks sektor], jenis: 'peta' | 'faksi' | 'dalam' }
+let simpul = [];
+let tepiList = [];
 
-// [LOGIKA] Pemotongan setengah-bidang: titik yang lebih dekat ke a daripada b
 function potongSetengah(poli, nx, ny, c) {
     const out = [];
     for (let k = 0; k < poli.length; k++) {
@@ -177,7 +236,6 @@ function bangunWilayah() {
         return id;
     };
 
-    // Poligon tiap sektor = kotak peta dipotong ke arah setiap sektor lain
     for (let i = 0; i < sektor.length; i++) {
         let poli = [
             { x: -DUNIA_HALF, y: -DUNIA_HALF }, { x: DUNIA_HALF, y: -DUNIA_HALF },
@@ -194,7 +252,6 @@ function bangunWilayah() {
         a.poli = poli.map(p => idSimpul(p.x, p.y));
     }
 
-    // Sisi: pasangan simpul yang dipakai satu atau dua sektor
     const sisiMap = new Map();
     tepiList = [];
     sektor.forEach((s, i) => {
@@ -211,7 +268,6 @@ function bangunWilayah() {
         }
     });
 
-    // Goyangan hanya pada simpul di dalam peta, supaya tepi peta tetap kotak
     for (const v of simpul) {
         if (v.tepi) continue;
         const [dx, dy] = goyang(v.x, v.y);
@@ -219,7 +275,6 @@ function bangunWilayah() {
         v.y = clamp(v.y + dy, -DUNIA_HALF, DUNIA_HALF);
     }
 
-    // Luas tiap sektor (rumus sepatu) untuk panel
     sektor.forEach(s => {
         const n = s.poli.length;
         let sum = 0;
@@ -236,7 +291,7 @@ function bangunWilayah() {
     }
 }
 
-// [LOGIKA] Perubahan faksi: hanya sisi milik sektor ini yang dinilai ulang
+// [LOGIKA] Perubahan faksi hanya menilai ulang sisi sektor ini
 function setFaksiSektor(i, f) {
     if (i < 0 || i >= sektor.length || f < 0 || f >= FAKSI.length) return false;
     sektor[i].faksi = f;
@@ -244,14 +299,16 @@ function setFaksiSektor(i, f) {
     minta();
     return true;
 }
-window.setFaksiSektor = setFaksiSektor;   // uji dari console: setFaksiSektor(12, 2)
+window.setFaksiSektor = setFaksiSektor;
 
 // ==========================================
-// 5. KAMERA, ZOOM, DAN PICKING
+// 6. KAMERA, ZOOM, DAN PICKING
 // ==========================================
 function resize() {
     canvas.width = window.innerWidth;
     canvas.height = window.innerHeight;
+    bgCanvas.width = window.innerWidth;
+    bgCanvas.height = window.innerHeight;
     minta();
 }
 window.addEventListener('resize', resize);
@@ -266,7 +323,6 @@ function toSY(yKm) { return (yKm - kamera.y) * kamera.skala + canvas.height / 2;
 function dariSX(sx) { return (sx - canvas.width / 2) / kamera.skala + kamera.x; }
 function dariSY(sy) { return (sy - canvas.height / 2) / kamera.skala + kamera.y; }
 
-// [LOGIKA] Pilihan lama dibersihkan saat layernya tidak lagi tampil
 function bersihkanPilihan() {
     const sA = fadeSektor(), fA = 1 - sA;
     if (sA < 0.3) dipilih = -1;
@@ -287,7 +343,6 @@ function tombolKanan() {
     ];
 }
 
-// [LOGIKA] Uji titik di dalam poligon (ray casting), akurat untuk bentuk baru
 function didalamPoli(poli, x, y) {
     let dalam = false;
     for (let k = 0, m = poli.length - 1; k < poli.length; m = k++) {
@@ -362,13 +417,13 @@ canvas.addEventListener('pointerup', e => {
 canvas.addEventListener('pointercancel', () => { ptr = null; });
 
 // ==========================================
-// 6. GAMBAR
+// 7. GAMBAR
 // ==========================================
-function gambarLatar() {
-    ctx.fillStyle = '#07080d';
-    ctx.fillRect(0, 0, canvas.width, canvas.height);
+// [RENDER] Grid sangat samar, hanya di lapisan peta
+function gambarGrid() {
     const langkah = 40;
-    ctx.strokeStyle = 'rgba(120,130,160,0.06)';
+    ctx.strokeStyle = `rgba(120,130,160,${GRID_ALPHA})`;
+    ctx.lineWidth = 1;
     ctx.beginPath();
     const ox = ((toSX(0) % langkah) + langkah) % langkah;
     const oy = ((toSY(0) % langkah) + langkah) % langkah;
@@ -377,7 +432,6 @@ function gambarLatar() {
     ctx.stroke();
 }
 
-// [RENDER] Simpul dikonversi ke layar sekali per frame, bukan per sisi
 function hitungLayar() {
     if (!simSX || simSX.length !== simpul.length) {
         simSX = new Float32Array(simpul.length);
@@ -396,7 +450,6 @@ function jalurPoli(poli) {
     ctx.closePath();
 }
 
-// Sisi disorot saat sektor atau faksi terpilih: batas dilebarkan
 function sisiSorot(e) {
     if (e.jenis === 'peta') return false;
     if (dipilih >= 0 && e.s.includes(dipilih)) return true;
@@ -404,7 +457,7 @@ function sisiSorot(e) {
     return false;
 }
 
-// [RENDER] Isi wilayah per sektor (poligon), batas sebagai garis vektor dengan tebal tetap dalam piksel
+// [RENDER] Warna isi lebih redup. Batas tipis samar, menebal hanya saat disorot.
 function gambarWilayah(sA, fA) {
     hitungLayar();
 
@@ -415,11 +468,11 @@ function gambarWilayah(sA, fA) {
         const redup = dipilihFaksi > 0 && s.faksi !== dipilihFaksi ? REDUP_LAIN : 1;
         jalurPoli(s.poli);
         if (fA > 0.01) {
-            ctx.fillStyle = rgbaStr(rgb, 0.28 * fA * kualitas * redup);
+            ctx.fillStyle = rgbaStr(rgb, 0.14 * fA * kualitas * redup);
             ctx.fill();
         }
         if (sA > 0.01) {
-            ctx.fillStyle = rgbaStr(rgb, (i === dipilih ? 0.55 : 0.3) * sA * kualitas);
+            ctx.fillStyle = rgbaStr(rgb, (i === dipilih ? 0.3 : 0.15) * sA * kualitas);
             ctx.fill();
         }
     }
@@ -427,17 +480,20 @@ function gambarWilayah(sA, fA) {
     ctx.lineCap = 'round';
     ctx.lineJoin = 'round';
     for (const e of tepiList) {
-        if (e.jenis === 'dalam' && sA < 0.01) continue;
-        if (e.jenis !== 'dalam' && Math.max(fA, sA) < 0.01) continue;
-
-        let lw, rgb, a;
-        if (sisiSorot(e)) { lw = 4; rgb = [253, 224, 71]; a = 1; }
-        else if (e.jenis === 'peta') { lw = 2; rgb = [255, 255, 255]; a = 0.9; }
-        else if (e.jenis === 'faksi') { lw = 1.5; rgb = [255, 255, 255]; a = 0.85 * Math.max(fA, sA); }
-        else { lw = 0.6; rgb = [255, 255, 255]; a = 0.25 * sA; }
-
-        ctx.strokeStyle = rgbaStr(rgb, a);
-        ctx.lineWidth = lw;
+        if (sisiSorot(e)) {
+            ctx.strokeStyle = 'rgba(253,224,71,1)';
+            ctx.lineWidth = 3;
+        } else if (e.jenis === 'peta') {
+            ctx.strokeStyle = 'rgba(255,255,255,0.18)';
+            ctx.lineWidth = 0.8;
+        } else if (e.jenis === 'faksi') {
+            ctx.strokeStyle = `rgba(255,255,255,${(0.22 * Math.max(fA, sA)).toFixed(3)})`;
+            ctx.lineWidth = 0.8;
+        } else {
+            if (sA < 0.01) continue;
+            ctx.strokeStyle = `rgba(255,255,255,${(0.08 * sA).toFixed(3)})`;
+            ctx.lineWidth = 0.5;
+        }
         ctx.beginPath();
         ctx.moveTo(simSX[e.a], simSY[e.a]);
         ctx.lineTo(simSX[e.b], simSY[e.b]);
@@ -448,12 +504,12 @@ function gambarWilayah(sA, fA) {
 function gambarTitikSektor(sA) {
     if (sA < 0.01) return;
     ctx.globalAlpha = sA;
-    for (const s of sektor) {
+    for (let i = 0; i < sektor.length; i++) {
+        const s = sektor[i];
         const sx = toSX(s.x), sy = toSY(s.y);
         if (sx < -30 || sy < -30 || sx > canvas.width + 30 || sy > canvas.height + 30) continue;
         const warna = FAKSI[s.faksi].rgb;
-        const idx = sektor.indexOf(s);
-        if (idx === dipilih) {
+        if (i === dipilih) {
             ctx.strokeStyle = '#fde68a';
             ctx.lineWidth = 2;
             ctx.beginPath();
@@ -586,7 +642,8 @@ function gambarPanel(sA) {
 
 function gambar() {
     const sA = fadeSektor(), fA = 1 - sA;
-    gambarLatar();
+    ctx.clearRect(0, 0, canvas.width, canvas.height);   // lapisan peta transparan, bintang di belakang
+    gambarGrid();
     gambarWilayah(sA, fA);
     gambarTitikSektor(sA);
     gambarMarkas(fA);
@@ -594,7 +651,7 @@ function gambar() {
 }
 
 // ==========================================
-// 7. LOOP (on-demand)
+// 8. LOOP (on-demand)
 // ==========================================
 function frame() {
     rafAktif = false;
@@ -602,9 +659,10 @@ function frame() {
 }
 
 // ==========================================
-// 8. MULAI
+// 9. MULAI
 // ==========================================
 resize();
+buatBintang();
 bangunWilayah();
 kamera.skala = skalaAwal();
 minta();
