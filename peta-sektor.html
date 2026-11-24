@@ -1,0 +1,464 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>Peta Antar Sektor</title>
+<style>
+body,html{margin:0;padding:0;width:100%;height:100%;overflow:hidden;background:#07080d;font-family:monospace}
+canvas{display:block;touch-action:none}
+</style>
+</head>
+<body>
+<canvas id="gameCanvas"></canvas>
+
+<script>
+// ==========================================
+// 1. KONFIGURASI
+// ==========================================
+const canvas = document.getElementById('gameCanvas');
+const ctx = canvas.getContext('2d');
+
+function resize() {
+    canvas.width = window.innerWidth;
+    canvas.height = window.innerHeight;
+    ctx.imageSmoothingEnabled = true;
+}
+window.addEventListener('resize', resize);
+resize();
+
+// Satuan dunia: km. Area dunia 400 x 400 km, berpusat di (0, 0)
+const SEED = 979;
+const JUMLAH_SEKTOR = 50;
+const DUNIA_HALF = 200;               // km, dunia dari -200 sampai 200
+const DUNIA_W = DUNIA_HALF * 2;       // 400 px di canvas offscreen (1 px = 1 km)
+const JARAK_MIN_SEKTOR = 30;          // km, jarak minimum antar titik sektor
+const SEBARAN_TITIK = 170;            // km, titik hanya dibuat di dalam area ini
+const NOISE_AMPLITUDO = 26;           // km, seberapa bergelombang tepi wilayah
+const SKALA_MIN = 0.2, SKALA_MAX = 12, SKALA_LANGKAH = 1.25;
+
+// Faksi (data sementara untuk uji tampilan)
+const FAKSI = [
+    { nama: 'Netral',           rgb: [120, 130, 150] },
+    { nama: 'Aliansi Biru',     rgb: [60, 140, 255] },
+    { nama: 'Kekaisaran Merah', rgb: [230, 70, 70] },
+    { nama: 'Serikat Hijau',    rgb: [70, 200, 120] }
+];
+
+// ==========================================
+// 2. RANDOM TETAP (seed) DAN NOISE
+// ==========================================
+function mulberry32(a) {
+    return function () {
+        a |= 0; a = a + 0x6D2B79F5 | 0;
+        let t = Math.imul(a ^ a >>> 15, 1 | a);
+        t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t;
+        return ((t ^ t >>> 14) >>> 0) / 4294967296;
+    };
+}
+
+function hashKisi(x, y) {
+    let h = (x * 374761393 + y * 668265263) | 0;
+    h = Math.imul(h ^ (h >>> 13), 1274126177);
+    return ((h ^ (h >>> 16)) >>> 0) / 4294967295;
+}
+
+// Value noise halus, 0..1. Nilai untuk satu titik dunia selalu sama
+function vnoise(x, y) {
+    const xi = Math.floor(x), yi = Math.floor(y);
+    const xf = x - xi, yf = y - yi;
+    const u = xf * xf * (3 - 2 * xf), v = yf * yf * (3 - 2 * yf);
+    const a = hashKisi(xi, yi), b = hashKisi(xi + 1, yi);
+    const c = hashKisi(xi, yi + 1), d = hashKisi(xi + 1, yi + 1);
+    return a + (b - a) * u + (c - a) * v + (a - b - c + d) * u * v;
+}
+
+// Gangguan tepi: satu medan untuk semua sektor, jadi batas bersama selalu sama di kedua sisi
+function gangguan(xKm, yKm) {
+    const n = vnoise(xKm / 22, yKm / 22) * 0.6 + vnoise(xKm / 9, yKm / 9) * 0.4;
+    return (n - 0.5) * 2 * NOISE_AMPLITUDO;
+}
+
+// ==========================================
+// 3. DATA SEKTOR
+// ==========================================
+const rnd = mulberry32(SEED);
+const sektor = [];
+
+// Posisi acak dengan jarak minimum antar titik
+let percobaan = 0;
+while (sektor.length < JUMLAH_SEKTOR && percobaan < 200000) {
+    percobaan++;
+    const x = (rnd() * 2 - 1) * SEBARAN_TITIK;
+    const y = (rnd() * 2 - 1) * SEBARAN_TITIK;
+    let cukup = true;
+    for (const s of sektor) {
+        if (Math.hypot(s.x - x, s.y - y) < JARAK_MIN_SEKTOR) { cukup = false; break; }
+    }
+    if (cukup) sektor.push({ x, y });
+}
+
+// Data demo: faksi, status, dan stasiun
+sektor.forEach((s, i) => {
+    s.id = 'S-' + String(i + 1).padStart(2, '0');
+    const r = rnd();
+    s.faksi = r < 0.4 ? 0 : (r < 0.65 ? 1 : (r < 0.85 ? 2 : 3));
+    s.dijelajahi = [0, 1, 2].includes(i);
+    s.stasiun = [0, 1, 2, 5, 9, 14].includes(i);
+});
+
+// ==========================================
+// 4. PETA WILAYAH (Voronoi dengan tepi bergelombang)
+// ==========================================
+// Dihitung sekali. Tiap piksel 1 km menyimpan indeks sektor pemilik.
+const wilayahCanvas = document.createElement('canvas');
+wilayahCanvas.width = DUNIA_W;
+wilayahCanvas.height = DUNIA_W;
+
+function bangunWilayah() {
+    const pemilik = new Int16Array(DUNIA_W * DUNIA_W);
+    for (let py = 0; py < DUNIA_W; py++) {
+        for (let px = 0; px < DUNIA_W; px++) {
+            const xKm = -DUNIA_HALF + px + 0.5;
+            const yKm = -DUNIA_HALF + py + 0.5;
+            const g = gangguan(xKm, yKm);
+            let best = -1, bestSkor = Infinity;
+            for (let i = 0; i < sektor.length; i++) {
+                const d = Math.hypot(xKm - sektor[i].x, yKm - sektor[i].y) + g;
+                if (d < bestSkor) { bestSkor = d; best = i; }
+            }
+            pemilik[py * DUNIA_W + px] = best;
+        }
+    }
+
+    const wctx = wilayahCanvas.getContext('2d');
+    const img = wctx.createImageData(DUNIA_W, DUNIA_W);
+    const data = img.data;
+    for (let py = 0; py < DUNIA_W; py++) {
+        for (let px = 0; px < DUNIA_W; px++) {
+            const p = py * DUNIA_W + px;
+            const o = p * 4;
+            const s = sektor[pemilik[p]];
+            const warna = FAKSI[s.faksi].rgb;
+            const alpha = s.faksi === 0 ? 40 : 75;
+            data[o] = warna[0]; data[o + 1] = warna[1]; data[o + 2] = warna[2]; data[o + 3] = alpha;
+
+            // Garis batas: piksel yang bertetangga dengan sektor lain
+            const kanan = px + 1 < DUNIA_W ? pemilik[p + 1] : pemilik[p];
+            const bawah = py + 1 < DUNIA_W ? pemilik[p + DUNIA_W] : pemilik[p];
+            if (kanan !== pemilik[p] || bawah !== pemilik[p]) {
+                data[o] = 230; data[o + 1] = 235; data[o + 2] = 245; data[o + 3] = 150;
+            }
+        }
+    }
+    wctx.putImageData(img, 0, 0);
+}
+
+// ==========================================
+// 5. KAMERA DAN INTERAKSI
+// ==========================================
+// Kamera dalam km dunia. skala = px layar per km
+const kamera = { x: 0, y: 0, skala: 1 };
+let dipilih = -1;
+let tampilPesan = '';
+let pesanWaktu = 0;
+let tombolTeleport = [];
+let ptr = null;
+
+function skalaAwal() {
+    return Math.min(canvas.width, canvas.height) / (DUNIA_W + 40);
+}
+kamera.skala = skalaAwal();
+
+function toSX(xKm) { return (xKm - kamera.x) * kamera.skala + canvas.width / 2; }
+function toSY(yKm) { return (yKm - kamera.y) * kamera.skala + canvas.height / 2; }
+function dariSX(sx) { return (sx - canvas.width / 2) / kamera.skala + kamera.x; }
+function dariSY(sy) { return (sy - canvas.height / 2) / kamera.skala + kamera.y; }
+function clamp(v, a, b) { return Math.max(a, Math.min(b, v)); }
+
+function posisi(e) {
+    const r = canvas.getBoundingClientRect();
+    return { x: e.clientX - r.left, y: e.clientY - r.top };
+}
+
+function ubahZoom(arah) {
+    kamera.skala = clamp(kamera.skala * (arah > 0 ? SKALA_LANGKAH : 1 / SKALA_LANGKAH), SKALA_MIN, SKALA_MAX);
+}
+
+function sektorTerdekat(sx, sy, batasLayar) {
+    let best = -1, bestJarak = batasLayar;
+    sektor.forEach((s, i) => {
+        const d = Math.hypot(toSX(s.x) - sx, toSY(s.y) - sy);
+        if (d < bestJarak) { bestJarak = d; best = i; }
+    });
+    return best;
+}
+
+function dalamKotak(p, k) {
+    return p.x >= k.x && p.x <= k.x + k.w && p.y >= k.y && p.y <= k.y + k.h;
+}
+
+canvas.addEventListener('pointerdown', e => {
+    e.preventDefault();
+    const p = posisi(e);
+    ptr = { sx: p.x, sy: p.y, lx: p.x, ly: p.y, moved: false };
+});
+
+canvas.addEventListener('pointermove', e => {
+    if (!ptr) return;
+    e.preventDefault();
+    const p = posisi(e);
+    if (Math.hypot(p.x - ptr.sx, p.y - ptr.sy) > 6) ptr.moved = true;
+    if (ptr.moved) {
+        kamera.x -= (p.x - ptr.lx) / kamera.skala;
+        kamera.y -= (p.y - ptr.ly) / kamera.skala;
+    }
+    ptr.lx = p.x; ptr.ly = p.y;
+});
+
+canvas.addEventListener('pointerup', e => {
+    if (!ptr) return;
+    const p = posisi(e);
+    if (!ptr.moved) {
+        // Tombol zoom
+        const zIn = { x: canvas.width - 54, y: canvas.height / 2 - 60, w: 44, h: 44 };
+        const zOut = { x: canvas.width - 54, y: canvas.height / 2 + 10, w: 44, h: 44 };
+        const btnPusat = { x: canvas.width - 86, y: 10, w: 76, h: 32 };
+        if (dalamKotak(p, zIn)) ubahZoom(1);
+        else if (dalamKotak(p, zOut)) ubahZoom(-1);
+        else if (dalamKotak(p, btnPusat)) { kamera.x = 0; kamera.y = 0; kamera.skala = skalaAwal(); }
+        else {
+            // Tombol teleport di panel
+            let kena = null;
+            for (const t of tombolTeleport) if (dalamKotak(p, t)) kena = t;
+            if (kena) {
+                tampilPesan = `Teleport ke ${sektor[kena.idx].id} (demo, belum terhubung ke kapal)`;
+                pesanWaktu = performance.now();
+            } else {
+                dipilih = sektorTerdekat(p.x, p.y, 18);
+            }
+        }
+    }
+    ptr = null;
+});
+
+canvas.addEventListener('pointercancel', () => { ptr = null; });
+
+// ==========================================
+// 6. GAMBAR
+// ==========================================
+function gambarLatar() {
+    ctx.fillStyle = '#07080d';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    const langkah = 40;
+    ctx.strokeStyle = 'rgba(120,130,160,0.06)';
+    ctx.beginPath();
+    const ox = ((toSX(0) % langkah) + langkah) % langkah;
+    const oy = ((toSY(0) % langkah) + langkah) % langkah;
+    for (let x = ox; x < canvas.width; x += langkah) { ctx.moveTo(x + 0.5, 0); ctx.lineTo(x + 0.5, canvas.height); }
+    for (let y = oy; y < canvas.height; y += langkah) { ctx.moveTo(0, y + 0.5); ctx.lineTo(canvas.width, y + 0.5); }
+    ctx.stroke();
+}
+
+function gambarWilayah() {
+    const x0 = toSX(-DUNIA_HALF), y0 = toSY(-DUNIA_HALF);
+    const ukuran = DUNIA_W * kamera.skala;
+    ctx.imageSmoothingEnabled = true;
+    ctx.drawImage(wilayahCanvas, x0, y0, ukuran, ukuran);
+
+    // Batas dunia
+    ctx.strokeStyle = 'rgba(253,224,71,0.35)';
+    ctx.lineWidth = 1;
+    ctx.setLineDash([6, 6]);
+    ctx.strokeRect(x0, y0, ukuran, ukuran);
+    ctx.setLineDash([]);
+}
+
+function gambarSektorDanGaris() {
+    // Garis teleport: antar stasiun yang sudah dijelajahi
+    const stasiunAktif = sektor.map((s, i) => i).filter(i => sektor[i].stasiun && sektor[i].dijelajahi);
+    ctx.strokeStyle = 'rgba(253,224,71,0.5)';
+    ctx.lineWidth = 1.5;
+    ctx.setLineDash([5, 5]);
+    for (let a = 0; a < stasiunAktif.length; a++) {
+        for (let b = a + 1; b < stasiunAktif.length; b++) {
+            const A = sektor[stasiunAktif[a]], B = sektor[stasiunAktif[b]];
+            ctx.beginPath();
+            ctx.moveTo(toSX(A.x), toSY(A.y));
+            ctx.lineTo(toSX(B.x), toSY(B.y));
+            ctx.stroke();
+        }
+    }
+    ctx.setLineDash([]);
+
+    // Titik sektor
+    sektor.forEach((s, i) => {
+        const sx = toSX(s.x), sy = toSY(s.y);
+        if (sx < -30 || sy < -30 || sx > canvas.width + 30 || sy > canvas.height + 30) return;
+        const warna = FAKSI[s.faksi].rgb;
+        const r = i === dipilih ? 7 : 4;
+
+        if (i === dipilih) {
+            ctx.strokeStyle = '#fde68a';
+            ctx.lineWidth = 2;
+            ctx.beginPath();
+            ctx.arc(sx, sy, 12, 0, Math.PI * 2);
+            ctx.stroke();
+        }
+
+        ctx.beginPath();
+        ctx.arc(sx, sy, r, 0, Math.PI * 2);
+        if (s.dijelajahi) {
+            ctx.fillStyle = `rgba(${warna[0]},${warna[1]},${warna[2]},1)`;
+            ctx.fill();
+            ctx.strokeStyle = '#ffffff';
+            ctx.lineWidth = 1;
+            ctx.stroke();
+        } else {
+            ctx.fillStyle = 'rgba(90,100,120,0.8)';
+            ctx.fill();
+        }
+
+        // Ikon stasiun
+        if (s.stasiun && s.dijelajahi) {
+            ctx.fillStyle = '#fde68a';
+            ctx.fillRect(sx + 6, sy - 10, 6, 6);
+        }
+
+        // Label dan tanda tanya
+        if (kamera.skala > 0.5) {
+            ctx.font = '10px monospace';
+            ctx.textAlign = 'left';
+            ctx.textBaseline = 'alphabetic';
+            ctx.fillStyle = s.dijelajahi ? '#fde68a' : 'rgba(180,190,210,0.6)';
+            ctx.fillText(s.dijelajahi ? s.id : '?', sx + 8, sy + 3);
+        }
+    });
+}
+
+function gambarPanel() {
+    tombolTeleport = [];
+    const pilih = dipilih >= 0 ? sektor[dipilih] : null;
+
+    // Info bar atas
+    const dijelajahi = sektor.filter(s => s.dijelajahi).length;
+    const stasiun = sektor.filter(s => s.stasiun && s.dijelajahi).length;
+    ctx.fillStyle = 'rgba(0,0,0,0.7)';
+    ctx.fillRect(8, 8, 300, 74);
+    ctx.fillStyle = '#fde68a';
+    ctx.font = '13px monospace';
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'top';
+    ctx.fillText('PETA ANTAR SEKTOR', 16, 14);
+    ctx.fillText(`Sektor: ${sektor.length}   Dijelajahi: ${dijelajahi}`, 16, 34);
+    ctx.fillText(`Stasiun aktif: ${stasiun}`, 16, 52);
+    ctx.fillText(`Zoom: ${kamera.skala.toFixed(2)}`, 16, 68);
+
+    // Legenda faksi
+    let ly = 90;
+    ctx.font = '11px monospace';
+    FAKSI.forEach(f => {
+        ctx.fillStyle = `rgb(${f.rgb[0]},${f.rgb[1]},${f.rgb[2]})`;
+        ctx.fillRect(16, ly + 2, 10, 10);
+        ctx.fillStyle = '#fde68a';
+        ctx.fillText(f.nama, 32, ly);
+        ly += 16;
+    });
+
+    // Panel sektor terpilih
+    if (pilih) {
+        const pw = 260, ph = 120 + (pilih.dijelajahi && pilih.stasiun ? 0 : 0);
+        const px = 8, py = canvas.height - ph - 110;
+        ctx.fillStyle = 'rgba(0,0,0,0.8)';
+        ctx.fillRect(px, py, pw, ph);
+        ctx.strokeStyle = '#fde68a';
+        ctx.lineWidth = 1;
+        ctx.strokeRect(px + 0.5, py + 0.5, pw - 1, ph - 1);
+
+        ctx.fillStyle = '#fde68a';
+        ctx.font = '13px monospace';
+        ctx.fillText(`${pilih.id}  (${FAKSI[pilih.faksi].nama})`, px + 10, py + 10);
+        ctx.font = '11px monospace';
+        ctx.fillStyle = '#e5e7eb';
+        ctx.fillText(`Posisi: ${pilih.x.toFixed(0)}, ${pilih.y.toFixed(0)} km`, px + 10, py + 30);
+        ctx.fillText(`Status: ${pilih.dijelajahi ? 'sudah dijelajahi' : 'belum dijelajahi'}`, px + 10, py + 46);
+        ctx.fillText(`Stasiun: ${pilih.stasiun ? (pilih.dijelajahi ? 'aktif' : 'ada, belum terbaca') : 'tidak ada'}`, px + 10, py + 62);
+
+        // Pilihan teleport: hanya dari sektor yang dijelajahi dan punya stasiun
+        if (pilih.dijelajahi && pilih.stasiun) {
+            ctx.fillStyle = '#fde68a';
+            ctx.fillText('Teleport ke:', px + 10, py + 82);
+            const tujuan = sektor.map((s, i) => ({ s, i }))
+                .filter(o => o.i !== dipilih && o.s.dijelajahi && o.s.stasiun);
+            let bx = px + 10, by = py + 98;
+            for (const o of tujuan) {
+                const w = 70, h = 18;
+                if (bx + w > px + pw - 10) { bx = px + 10; by += h + 4; }
+                ctx.fillStyle = 'rgba(253,224,71,0.15)';
+                ctx.fillRect(bx, by, w, h);
+                ctx.strokeStyle = '#fde68a';
+                ctx.strokeRect(bx + 0.5, by + 0.5, w - 1, h - 1);
+                ctx.fillStyle = '#fde68a';
+                ctx.textAlign = 'center';
+                ctx.textBaseline = 'middle';
+                ctx.fillText(o.s.id, bx + w / 2, by + h / 2);
+                ctx.textAlign = 'left';
+                ctx.textBaseline = 'top';
+                tombolTeleport.push({ x: bx, y: by, w, h, idx: o.i });
+                bx += w + 6;
+            }
+        }
+    }
+
+    // Tombol kanan atas
+    const tombol = [
+        { x: canvas.width - 86, y: 10, w: 76, h: 32, t: 'PUSAT' },
+        { x: canvas.width - 54, y: canvas.height / 2 - 60, w: 44, h: 44, t: '+' },
+        { x: canvas.width - 54, y: canvas.height / 2 + 10, w: 44, h: 44, t: '−' }
+    ];
+    for (const b of tombol) {
+        ctx.fillStyle = 'rgba(0,0,0,0.7)';
+        ctx.fillRect(b.x, b.y, b.w, b.h);
+        ctx.strokeStyle = '#fde68a';
+        ctx.lineWidth = 2;
+        ctx.strokeRect(b.x, b.y, b.w, b.h);
+        ctx.fillStyle = '#fde68a';
+        ctx.font = '13px monospace';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(b.t, b.x + b.w / 2, b.y + b.h / 2);
+    }
+
+    // Pesan teleport (sementara)
+    if (tampilPesan && performance.now() - pesanWaktu < 3000) {
+        ctx.fillStyle = 'rgba(0,0,0,0.8)';
+        const lebar = Math.min(canvas.width - 20, 420);
+        ctx.fillRect((canvas.width - lebar) / 2, 96, lebar, 28);
+        ctx.fillStyle = '#fde68a';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(tampilPesan, canvas.width / 2, 110);
+    }
+}
+
+function gambar() {
+    gambarLatar();
+    gambarWilayah();
+    gambarSektorDanGaris();
+    gambarPanel();
+}
+
+// ==========================================
+// 7. LOOP
+// ==========================================
+function loop() {
+    try { gambar(); } catch (err) { console.error(err); }
+    requestAnimationFrame(loop);
+}
+
+// Bangun wilayah sekali, lalu mulai loop
+bangunWilayah();
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>
