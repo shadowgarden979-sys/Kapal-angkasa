@@ -1,0 +1,564 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>Peta Antar Sektor v14 — Optimasi</title>
+<style>
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; padding: 0;
+    width: 100%; height: 100%;
+    overflow: hidden;
+    background: #0b0c10;
+    color: #e2e8f0;
+    font-family: 'Courier New', Courier, monospace;
+    font-size: 14px;
+    -webkit-tap-highlight-color: transparent;
+  }
+  #gameCanvas { display: block; }
+  #ui {
+    position: absolute; top: 8px; left: 8px; right: 8px;
+    pointer-events: none; z-index: 10;
+  }
+  .panel {
+    background: rgba(15, 17, 23, 0.85);
+    border: 1px solid #334155;
+    border-radius: 8px;
+    padding: 8px 12px;
+    pointer-events: auto;
+    user-select: none;
+    -webkit-user-select: none;
+  }
+  .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 6px; }
+  .lbl { font-size: 12px; color: #94a3b8; white-space: nowrap; }
+  .val { font-size: 13px; color: #22d3ee; font-weight: bold; margin-left: 6px; }
+  button {
+    background: #1e293b; border: 1px solid #475569; color: #e2e8f0;
+    padding: 6px 10px; border-radius: 6px; cursor: pointer;
+    font-family: inherit; font-size: 12px;
+  }
+  button.active { background: #0f766e; border-color: #14b8a6; color: #fff; }
+  button:active { transform: scale(0.95); }
+  #status { font-size: 12px; color: #64748b; margin-top: 6px; }
+  .hint { font-size: 11px; color: #475569; margin-top: 4px; }
+</style>
+</head>
+<body>
+<canvas id="gameCanvas"></canvas>
+<canvas id="bintang" style="display:none;"></canvas>
+
+<div id="ui">
+  <div class="panel">
+    <div class="row"><span class="lbl">SEKTOR</span><span class="val" id="sSektor">0</span><span class="lbl">FAKSI</span><span class="val" id="sFaksi">3</span></div>
+    <div class="row"><span class="lbl">SIM</span><span class="val" id="sSim">0:00</span><span class="lbl">SPEED</span><span class="val" id="sSpeed">1x</span></div>
+    <div class="row">
+      <button id="btn0" class="active">JEDA</button>
+      <button id="btn1">1x</button>
+      <button id="btn2">4x</button>
+      <button id="btn3">16x</button>
+      <button id="btn4">MAX</button>
+    </div>
+    <div id="status" class="hint">Siap. Seret layar = geser kamera • Kirim tarik = zoom</div>
+  </div>
+</div>
+
+<script>
+/* ============================================================
+   KONFIGURASI & KONSTANTA (v14)
+   ============================================================ */
+const GRID_N = 78;
+const DUNIA_W = 5000;
+const DUNIA_HALF = 2500;
+const CELL_KM = DUNIA_W / GRID_N; // ~64.1 km
+const FRAME_BUDGET_MS = 8;
+const BAKE_JEDA_MS = 400;
+
+const KECEPATAN_SPEED = [0, 10, 40, 160, 2880];
+const LABEL_SPEED = ['JEDA','1x','4x','16x','MAX'];
+const KECEPATAN_KM_MENIT = 0.9;
+
+const SIM_TICK_MS = 33; // simulasi berjalan ~30 Hz terlepas dari render
+
+/* ============================================================
+   STATE GLOBAL
+   ============================================================ */
+const canvas = document.getElementById('gameCanvas');
+const ctx = canvas.getContext('2d', { alpha: false });
+const canvasBintang = document.getElementById('bintang');
+const ctxBintang = canvasBintang.getContext('2d');
+
+let lebar, tinggi;
+let kamera = { x: 0, y: 0, scale: 1 };
+let drag = { aktif: false, sx: 0, sy: 0, kx: 0, ky: 0 };
+let speedIdx = 1;
+let tSim = 0; // waktu simulasi (menit)
+let lastRender = performance.now();
+
+const sektor = [];
+const FAKSI = [];
+const heap = [];
+
+// Cache wilayah (optimasi #2)
+let cacheCanvas = null;
+let cacheCtx = null;
+let cacheDirty = true;
+let lastCacheCam = { x: 0, y: 0, s: 0 };
+const CACHE_INVALIDATE_PX = 120;
+
+// Warna faksi sederhana
+const WARNA_FAKSI = [
+  [60, 120, 220],   // biru
+  [220, 80, 60],    // merah
+  [120, 200, 100],  // hijau
+];
+
+/* ============================================================
+   UTILITAS MATEMATIKA
+   ============================================================ */
+function resize() {
+  lebar = canvas.width = window.innerWidth;
+  tinggi = canvas.height = window.innerHeight;
+  cacheDirty = true;
+}
+window.addEventListener('resize', resize);
+resize();
+
+function worldToScreen(wx, wy) {
+  return {
+    x: (wx - kamera.x) * kamera.scale + lebar / 2,
+    y: (wy - kamera.y) * kamera.scale + tinggi / 2
+  };
+}
+
+function bbDalam(bb, view) {
+  // culling sederhana: kotak sektor vs kotak layar
+  return !(bb.maxX < view.minX || bb.minX > view.maxX ||
+           bb.maxY < view.minY || bb.minY > view.maxY);
+}
+
+function jalurPoli(poli) {
+  if (!poli || poli.length === 0) return;
+  ctx.beginPath();
+  ctx.moveTo(poli[0].x, poli[0].y);
+  for (let i = 1; i < poli.length; i++) ctx.lineTo(poli[i].x, poli[i].y);
+  ctx.closePath();
+}
+
+function jalurPoliCache(poli) {
+  if (!poli || poli.length === 0) return;
+  cacheCtx.beginPath();
+  cacheCtx.moveTo(poli[0].x, poli[0].y);
+  for (let i = 1; i < poli.length; i++) cacheCtx.lineTo(poli[i].x, poli[i].y);
+  cacheCtx.closePath();
+}
+
+/* ============================================================
+   GENERASI SEKTOR & WILAYAH (logika asli dipertahankan)
+   ============================================================ */
+function titikRandom(radius) {
+  return (Math.random() - 0.5) * 2 * radius;
+}
+
+function bangunSektor() {
+  sektor.length = 0;
+  const step = DUNIA_W / GRID_N;
+  for (let gx = 0; gx < GRID_N; gx++) {
+    for (let gy = 0; gy < GRID_N; gy++) {
+      const cx = -DUNIA_HALF + gx * step + step / 2 + titikRandom(step * 0.3);
+      const cy = -DUNIA_HALF + gy * step + step / 2 + titikRandom(step * 0.3);
+      const r = step * 0.45;
+      const poli = [];
+      const segmen = 6;
+      for (let s = 0; s < segmen; s++) {
+        const a = (s / segmen) * Math.PI * 2;
+        poli.push({ x: cx + Math.cos(a) * r, y: cy + Math.sin(a) * r });
+      }
+      const bb = {
+        minX: cx - r, maxX: cx + r,
+        minY: cy - r, maxY: cy + r
+      };
+      sektor.push({
+        id: gx * GRID_N + gy,
+        gx, gy, cx, cy, r, poli, bb,
+        owner: -1, // -1 = tidak ada
+        garnisun: 0,
+        kekuatan: 0,
+        markas: false
+      });
+    }
+  }
+}
+
+function bangunFaksi() {
+  FAKSI.length = 0;
+  for (let i = 0; i < 3; i++) {
+    FAKSI.push({
+      id: i,
+      nama: ['Faksi Aurora', 'Faksi Solaris', 'Faksi Nox'][i],
+      rgb: WARNA_FAKSI[i],
+      poin: 100,
+      markasSektor: null,
+      ekonomi: 50,
+      milik: []
+    });
+  }
+  // Tempatkan markas di sektor acak yang berjauhan
+  const urutan = sektor.map((s,i)=>i).sort(()=>Math.random()-0.5);
+  let ditempatkan = 0;
+  for (const idx of urutan) {
+    if (ditempatkan >= 3) break;
+    const s = sektor[idx];
+    if (s.owner !== -1) continue;
+    s.owner = ditempatkan;
+    s.markas = true;
+    s.kekuatan = 80;
+    FAKSI[ditempatkan].markasSektor = s.id;
+    FAKSI[ditempatkan].milik.push(s.id);
+    ditempatkan++;
+  }
+}
+
+function bangunWilayah() {
+  // Inisialisasi sisa sektor kepada faksi terdekat sederhana
+  for (const s of sektor) {
+    if (s.owner === -1) {
+      s.owner = Math.floor(Math.random() * 3);
+      s.garnisun = Math.floor(Math.random() * 20);
+      s.kekuatan = s.garnisun;
+      FAKSI[s.owner].milik.push(s.id);
+    }
+  }
+  cacheDirty = true;
+}
+
+/* ============================================================
+   HEAP EVENT & SIMULASI (optimasi #1: terpisah dari render)
+   ============================================================ */
+function heapPush(ev) {
+  heap.push(ev);
+  let i = heap.length - 1;
+  while (i > 0) {
+    const p = (i - 1) >> 1;
+    if (heap[p].t <= ev.t) break;
+    [heap[i], heap[p]] = [heap[p], heap[i]];
+    i = p;
+  }
+}
+
+function heapPop() {
+  const top = heap[0];
+  const end = heap.pop();
+  if (heap.length) {
+    heap[0] = end;
+    let i = 0;
+    const n = heap.length;
+    while (true) {
+      let kecil = i;
+      const l = 2*i+1, r = 2*i+2;
+      if (l < n && heap[l].t < heap[kecil].t) kecil = l;
+      if (r < n && heap[r].t < heap[kecil].t) kecil = r;
+      if (kecil === i) break;
+      [heap[i], heap[kecil]] = [heap[kecil], heap[i]];
+      i = kecil;
+    }
+  }
+  return top;
+}
+
+function prosesEvent(ev) {
+  switch (ev.tipe) {
+    case 'HARIAN':
+      harianFaksi();
+      break;
+    case 'SERANG':
+      serangSektor(ev.sektor, ev.dari);
+      break;
+    case 'PRODUKSI':
+      produksiKapal(ev.sektor);
+      break;
+  }
+}
+
+function harianFaksi() {
+  for (const f of FAKSI) {
+    f.ekonomi += f.milik.length * 2;
+    if (f.ekonomi >= 50) {
+      f.ekonomi -= 50;
+      // cari sektor markas untuk produksi
+      const ms = sektor.find(s => s.id === f.markasSektor);
+      if (ms) heapPush({ t: tSim + 120, tipe: 'PRODUKSI', sektor: ms.id });
+    }
+  }
+  // jadwal harian berikutnya
+  heapPush({ t: tSim + 1440, tipe: 'HARIAN' });
+}
+
+function produksiKapal(sektorId) {
+  const s = sektor.find(x => x.id === sektorId);
+  if (!s) return;
+  s.garnisun += 5;
+  s.kekuatan = Math.min(100, s.kekuatan + 5);
+}
+
+function serangSektor(targetId, dariId) {
+  const t = sektor.find(x => x.id === targetId);
+  const d = sektor.find(x => x.id === dariId);
+  if (!t || !d) return;
+  const kerusakan = Math.floor(d.kekuatan * 0.3);
+  t.kekuatan = Math.max(0, t.kekuatan - kerusakan);
+  if (t.kekuatan <= 0 && t.owner !== d.owner) {
+    const lama = t.owner;
+    t.owner = d.owner;
+    // perbarui daftar milik faksi
+    const flama = FAKSI[lama];
+    flama.milik = flama.milik.filter(id => id !== t.id);
+    FAKSI[d.owner].milik.push(t.id);
+    cacheDirty = true;
+  }
+}
+
+function majWaktu() {
+  if (speedIdx === 0) return;
+  const faktor = KECEPATAN_SPEED[speedIdx];
+  const batas = tSim + faktor * (SIM_TICK_MS / 1000 / 60); // advance menit simulasi
+  const mulai = performance.now();
+  while (heap.length && heap[0].t <= batas) {
+    const ev = heapPop();
+    tSim = Math.max(tSim, ev.t);
+    prosesEvent(ev);
+    if (performance.now() - mulai > FRAME_BUDGET_MS) break;
+  }
+  tSim = Math.max(tSim, batas);
+}
+
+/* ============================================================
+   GARNISUN & RUTE (sederhana, utuh)
+   ============================================================ */
+function updateGarnisun() {
+  // Tidak ada logika berat di sini, hanya sinkronisasi visual
+}
+
+/* ============================================================
+   RENDER & CACHE WILAYAH (optimasi #2)
+   ============================================================ */
+function batasLayar() {
+  const s = kamera.scale;
+  return {
+    minX: (-lebar/2/s + kamera.x) - CELL_KM,
+    maxX: (lebar/2/s + kamera.x) + CELL_KM,
+    minY: (-tinggi/2/s + kamera.y) - CELL_KM,
+    maxY: (tinggi/2/s + kamera.y) + CELL_KM
+  };
+}
+
+function bakeWilayahViewport() {
+  if (!cacheCanvas || cacheCanvas.width !== lebar || cacheCanvas.height !== tinggi) {
+    cacheCanvas = document.createElement('canvas');
+    cacheCanvas.width = lebar;
+    cacheCanvas.height = tinggi;
+    cacheCtx = cacheCanvas.getContext('2d', { alpha: false });
+  }
+  const v = batasLayar();
+  cacheCtx.clearRect(0, 0, lebar, tinggi);
+  let tergambar = 0;
+  for (const s of sektor) {
+    if (!bbDalam(s.bb, v)) continue;
+    const f = FAKSI[s.owner];
+    if (!f) continue;
+    // gambar poligon ke cache dalam koordinat layar
+    cacheCtx.beginPath();
+    let pertama = true;
+    for (const p of s.poli) {
+      const sp = worldToScreen(p.x, p.y);
+      if (pertama) { cacheCtx.moveTo(sp.x, sp.y); pertama = false; }
+      else cacheCtx.lineTo(sp.x, sp.y);
+    }
+    cacheCtx.closePath();
+    cacheCtx.fillStyle = `rgba(${f.rgb[0]},${f.rgb[1]},${f.rgb[2]},0.18)`;
+    cacheCtx.fill();
+    cacheCtx.strokeStyle = `rgba(${f.rgb[0]},${f.rgb[1]},${f.rgb[2]},0.45)`;
+    cacheCtx.lineWidth = Math.max(0.6, 1.5 / kamera.scale);
+    cacheCtx.stroke();
+    tergambar++;
+  }
+  cacheDirty = false;
+  lastCacheCam = { x: kamera.x, y: kamera.y, s: kamera.scale };
+}
+
+function gambarWilayahDariCache() {
+  // Periksa apakah kamera bergerak cukup jauh untuk invalidate cache
+  const dx = Math.abs(kamera.x - lastCacheCam.x);
+  const dy = Math.abs(kamera.y - lastCacheCam.y);
+  const ds = Math.abs(kamera.scale - lastCacheCam.s);
+  if (cacheDirty || dx > CACHE_INVALIDATE_PX / kamera.scale || dy > CACHE_INVALIDATE_PX / kamera.scale || ds > 0.1) {
+    bakeWilayahViewport();
+  }
+  ctx.drawImage(cacheCanvas, 0, 0);
+}
+
+function gambarGarnisun() {
+  if (kamera.scale < 0.4) return; // LOD: skip saat zoom jauh
+  const v = batasLayar();
+  for (const s of sektor) {
+    if (!bbDalam(s.bb, v)) continue;
+    if (s.garnisun <= 0) continue;
+    const sp = worldToScreen(s.cx, s.cy);
+    const f = FAKSI[s.owner];
+    ctx.fillStyle = `rgba(${f.rgb[0]},${f.rgb[1]},${f.rgb[2]},0.9)`;
+    ctx.beginPath();
+    ctx.arc(sp.x, sp.y, Math.max(2, 4 * kamera.scale), 0, Math.PI*2);
+    ctx.fill();
+  }
+}
+
+function gambarTitikSektor() {
+  if (kamera.scale < 0.5) return;
+  const v = batasLayar();
+  ctx.strokeStyle = 'rgba(255,255,255,0.06)';
+  ctx.lineWidth = 0.5;
+  for (const s of sektor) {
+    if (!bbDalam(s.bb, v)) continue;
+    const sp = worldToScreen(s.cx, s.cy);
+    ctx.beginPath();
+    ctx.arc(sp.x, sp.y, 1.5, 0, Math.PI*2);
+    ctx.stroke();
+  }
+}
+
+function latarBintang() {
+  // Gambar sekali ke canvas bintang, lalu drawImage
+  if (canvasBintang.width !== lebar || canvasBintang.height !== tinggi) {
+    canvasBintang.width = lebar;
+    canvasBintang.height = tinggi;
+    const n = 350;
+    ctxBintang.fillStyle = '#0b0c10';
+    ctxBintang.fillRect(0, 0, lebar, tinggi);
+    ctxBintang.fillStyle = '#e2e8f0';
+    for (let i = 0; i < n; i++) {
+      const x = Math.random() * lebar;
+      const y = Math.random() * tinggi;
+      const r = Math.random() * 1.2 + 0.5;
+      const a = 0.3 + Math.random() * 0.7;
+      ctxBintang.globalAlpha = a;
+      ctxBintang.beginPath();
+      ctxBintang.arc(x, y, r, 0, Math.PI*2);
+      ctxBintang.fill();
+    }
+    ctxBintang.globalAlpha = 1;
+  }
+  ctx.drawImage(canvasBintang, 0, 0);
+}
+
+function gambarUIStat() {
+  document.getElementById('sSektor').textContent = sektor.length;
+  document.getElementById('sFaksi').textContent = FAKSI.length;
+  const menit = Math.floor(tSim);
+  const jam = Math.floor(menit / 60);
+  const m = menit % 60;
+  document.getElementById('sSim').textContent = `${jam}:${String(m).padStart(2,'0')}`;
+  document.getElementById('sSpeed').textContent = LABEL_SPEED[speedIdx];
+}
+
+function frame() {
+  const now = performance.now();
+  latarBintang();
+
+  // --- RENDER WILAYAH (cache) ---
+  if (kamera.scale > 0.2) gambarWilayahDariCache();
+
+  // --- ENTITAS RINGAN ---
+  gambarGarnisun();
+  gambarTitikSektor();
+
+  // --- UI ---
+  gambarUIStat();
+
+  lastRender = now;
+  requestAnimationFrame(frame);
+}
+
+/* ============================================================
+   INPUT & KONTROL
+   ============================================================ */
+function aturTombolSpeed() {
+  for (let i = 0; i < 5; i++) {
+    const b = document.getElementById('btn' + i);
+    b.classList.toggle('active', i === speedIdx);
+  }
+}
+
+function aturSpeed(idx) {
+  speedIdx = idx;
+  aturTombolSpeed();
+  // Langsung bereaksi (tanpa smoothing dtHalus)
+  if (idx !== 0 && heap.length === 0) {
+    // inisialisasi event pertama jika kosong
+    heapPush({ t: tSim + 1440, tipe: 'HARIAN' });
+  }
+}
+
+window.addEventListener('load', () => {
+  for (let i = 0; i < 5; i++) {
+    document.getElementById('btn' + i).addEventListener('click', () => aturSpeed(i));
+  }
+});
+
+canvas.addEventListener('pointerdown', e => {
+  drag.aktif = true;
+  drag.sx = e.clientX; drag.sy = e.clientY;
+  drag.kx = kamera.x; drag.ky = kamera.y;
+  cacheDirty = true;
+}, { passive: false });
+
+window.addEventListener('pointermove', e => {
+  if (!drag.aktif) return;
+  const dx = (e.clientX - drag.sx) / kamera.scale;
+  const dy = (e.clientY - drag.sy) / kamera.scale;
+  kamera.x = drag.kx - dx;
+  kamera.y = drag.ky - dy;
+  // batasi kamera agar tidak keluar dunia terlalu jauh
+  kamera.x = Math.max(-DUNIA_W*1.5, Math.min(DUNIA_W*1.5, kamera.x));
+  kamera.y = Math.max(-DUNIA_HALF*1.5, Math.min(DUNIA_HALF*1.5, kamera.y));
+  cacheDirty = true;
+}, { passive: false });
+
+window.addEventListener('pointerup', () => { drag.aktif = false; });
+
+canvas.addEventListener('wheel', e => {
+  e.preventDefault();
+  const before = kamera.scale;
+  const delta = -e.deltaY * 0.001;
+  let scaleBaru = kamera.scale * (1 + delta);
+  scaleBaru = Math.max(0.15, Math.min(4, scaleBaru));
+  // zoom terhadap posisi pointer
+  const mx = e.clientX - lebar/2;
+  const my = e.clientY - tinggi/2;
+  const wx = mx / before + kamera.x;
+  const wy = my / before + kamera.y;
+  kamera.scale = scaleBaru;
+  kamera.x = wx - mx / kamera.scale;
+  kamera.y = wy - my / kamera.scale;
+  cacheDirty = true;
+}, { passive: false });
+
+/* ============================================================
+   INISIALISASI & LOOP
+   ============================================================ */
+function init() {
+  bangunSektor();
+  bangunFaksi();
+  bangunWilayah();
+  aturTombolSpeed();
+  // Event pertama
+  heapPush({ t: tSim + 1440, tipe: 'HARIAN' });
+  requestAnimationFrame(frame);
+}
+
+// Loop simulasi terpisah dari render (optimasi #1)
+setInterval(majWaktu, SIM_TICK_MS);
+
+init();
+</script>
+</body>
+</html>
