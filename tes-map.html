@@ -1,564 +1,987 @@
 <!DOCTYPE html>
 <html lang="id">
 <head>
-<meta charset="UTF-8">
+<meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-<title>Peta Antar Sektor v14 — Optimasi</title>
+<title>Peta Antar Sektor v14 (Optimized)</title>
 <style>
-  * { box-sizing: border-box; }
-  html, body {
-    margin: 0; padding: 0;
-    width: 100%; height: 100%;
-    overflow: hidden;
-    background: #0b0c10;
-    color: #e2e8f0;
-    font-family: 'Courier New', Courier, monospace;
-    font-size: 14px;
-    -webkit-tap-highlight-color: transparent;
-  }
-  #gameCanvas { display: block; }
-  #ui {
-    position: absolute; top: 8px; left: 8px; right: 8px;
-    pointer-events: none; z-index: 10;
-  }
-  .panel {
-    background: rgba(15, 17, 23, 0.85);
-    border: 1px solid #334155;
-    border-radius: 8px;
-    padding: 8px 12px;
-    pointer-events: auto;
-    user-select: none;
-    -webkit-user-select: none;
-  }
-  .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 6px; }
-  .lbl { font-size: 12px; color: #94a3b8; white-space: nowrap; }
-  .val { font-size: 13px; color: #22d3ee; font-weight: bold; margin-left: 6px; }
-  button {
-    background: #1e293b; border: 1px solid #475569; color: #e2e8f0;
-    padding: 6px 10px; border-radius: 6px; cursor: pointer;
-    font-family: inherit; font-size: 12px;
-  }
-  button.active { background: #0f766e; border-color: #14b8a6; color: #fff; }
-  button:active { transform: scale(0.95); }
-  #status { font-size: 12px; color: #64748b; margin-top: 6px; }
-  .hint { font-size: 11px; color: #475569; margin-top: 4px; }
+body,html{margin:0;padding:0;width:100%;height:100%;overflow:hidden;background:#07080d;font-family:monospace}
+#bintang{position:fixed;left:0;top:0;z-index:0;pointer-events:none}
+#gameCanvas{position:fixed;left:0;top:0;z-index:1;touch-action:none}
 </style>
 </head>
 <body>
+<canvas id="bintang"></canvas>
 <canvas id="gameCanvas"></canvas>
-<canvas id="bintang" style="display:none;"></canvas>
-
-<div id="ui">
-  <div class="panel">
-    <div class="row"><span class="lbl">SEKTOR</span><span class="val" id="sSektor">0</span><span class="lbl">FAKSI</span><span class="val" id="sFaksi">3</span></div>
-    <div class="row"><span class="lbl">SIM</span><span class="val" id="sSim">0:00</span><span class="lbl">SPEED</span><span class="val" id="sSpeed">1x</span></div>
-    <div class="row">
-      <button id="btn0" class="active">JEDA</button>
-      <button id="btn1">1x</button>
-      <button id="btn2">4x</button>
-      <button id="btn3">16x</button>
-      <button id="btn4">MAX</button>
-    </div>
-    <div id="status" class="hint">Siap. Seret layar = geser kamera • Kirim tarik = zoom</div>
-  </div>
-</div>
-
 <script>
-/* ============================================================
-   KONFIGURASI & KONSTANTA (v14)
-   ============================================================ */
-const GRID_N = 78;
-const DUNIA_W = 5000;
-const DUNIA_HALF = 2500;
-const CELL_KM = DUNIA_W / GRID_N; // ~64.1 km
-const FRAME_BUDGET_MS = 8;
-const BAKE_JEDA_MS = 400;
+// ==========================================
+// 1. KONFIGURASI
+// ==========================================
+const VERSI='v14.1';
+const canvas=document.getElementById('gameCanvas'),ctx=canvas.getContext('2d');
+const bgCanvas=document.getElementById('bintang'),bgCtx=bgCanvas.getContext('2d');
+const bakeCanvas=document.createElement('canvas'),bakeCtx=bakeCanvas.getContext('2d');
 
-const KECEPATAN_SPEED = [0, 10, 40, 160, 2880];
-const LABEL_SPEED = ['JEDA','1x','4x','16x','MAX'];
-const KECEPATAN_KM_MENIT = 0.9;
-
-const SIM_TICK_MS = 33; // simulasi berjalan ~30 Hz terlepas dari render
-
-/* ============================================================
-   STATE GLOBAL
-   ============================================================ */
-const canvas = document.getElementById('gameCanvas');
-const ctx = canvas.getContext('2d', { alpha: false });
-const canvasBintang = document.getElementById('bintang');
-const ctxBintang = canvasBintang.getContext('2d');
-
-let lebar, tinggi;
-let kamera = { x: 0, y: 0, scale: 1 };
-let drag = { aktif: false, sx: 0, sy: 0, kx: 0, ky: 0 };
-let speedIdx = 1;
-let tSim = 0; // waktu simulasi (menit)
-let lastRender = performance.now();
-
-const sektor = [];
-const FAKSI = [];
-const heap = [];
-
-// Cache wilayah (optimasi #2)
-let cacheCanvas = null;
-let cacheCtx = null;
-let cacheDirty = true;
-let lastCacheCam = { x: 0, y: 0, s: 0 };
-const CACHE_INVALIDATE_PX = 120;
-
-// Warna faksi sederhana
-const WARNA_FAKSI = [
-  [60, 120, 220],   // biru
-  [220, 80, 60],    // merah
-  [120, 200, 100],  // hijau
+const SEED=979,DUNIA_HALF=2500,DUNIA_W=5000,GRID_N=78,CELL_KM=DUNIA_W/GRID_N;
+const JITTER_SEL=0.4,JITTER_KM=6,JITTER_SKALA=14,WINDOW_SEL=3;
+const FAKSI_RASIO=0.10,SPAWN_RADIUS_KM=2100,SPAWN_JARAK_MIN_KM=120;
+const POIN_AWAL=2,MARKAS_AWAL_FREGAT=4;
+const CADANGAN=0.30;            
+const BONUS_BERTAHAN=1.2;       
+const MARGIN_SERANG=1.2;        
+const PEMELIHARAAN=0.01;        
+const LOGISTIK_MIN=400,LOGISTIK_RANGE=1600;
+const MENIT_PER_HARI=1440,KECEPATAN_KM_MENIT=0.9;
+const PERSIAPAN_MIN=30,PERSIAPAN_RENTANG=30;
+const KECEPATAN_SPEED=[0,10,40,160,2880],LABEL_SPEED=['JEDA','1x','4x','16x','MAX'];
+const FRAME_BUDGET_MS=8;
+const PATH_MAKS=8,JEDA_PARKIR=60;
+const KELAS=[
+  {nama:'Fregat',poin:1,hari:1},{nama:'Kruiser',poin:4,hari:3},
+  {nama:'Kapal perang',poin:12,hari:8},{nama:'Raksasa',poin:40,hari:20}
 ];
+const POIN_K=KELAS.map(k=>k.poin);
+const BAKE_KM_PER_PX=8,BAKE_PX=Math.round(DUNIA_W/BAKE_KM_PER_PX),BAKE_JEDA_MS=400;
+const ALPHA_PUSAT=0.42,ALPHA_TEPI=0.06,NETRAL_ALPHA=0.05,REDUP_LAIN=0.2;
+const ALPHA_JALUR=0.20,ALPHA_JALUR_LINTAS=0.40,JALUR_MULAI_ZOOM=0.25,JALUR_PENUH_ZOOM=0.6;
+const SKALA_MIN=0.2,SKALA_MAX=12,SKALA_LANGKAH=1.25,SKALA_FADE_MULAI=0.6,SKALA_FADE_SELESAI=1.0;
+const MARGIN_PX=110,RUBBER_FAKTOR=0.35,PEGAS_K=50,PEGAS_D=14,GESEK=4,FLING_MAX_PX=1500;
+const BINTANG_N=180,BINTANG_HZ=10,GRID_KM=250,GRID_ALPHA=0.12,GRID_MIN_PX=30,LUAR_ALPHA=0.45;
 
-/* ============================================================
-   UTILITAS MATEMATIKA
-   ============================================================ */
-function resize() {
-  lebar = canvas.width = window.innerWidth;
-  tinggi = canvas.height = window.innerHeight;
-  cacheDirty = true;
+// ==========================================
+// 2. STATUS
+// ==========================================
+let rafAktif=false,lastFrame=performance.now(),lastBake=0,bakeKotor=true,dtHalus=0.016;
+let speedIdx=1,tSim=0,heap=[],galat=0,galatPesan='';
+const rngSim=mulberry32(SEED+99);
+const kamera={x:0,y:0,skala:SKALA_MIN},vel={x:0,y:0};
+let dipilih=-1,dipilihFaksi=-1,ptr=null;
+let bintang=[],sektor=[],simpul=[],tepiList=[],jalurList=[],seedAt=[],FAKSI=[];
+let log=[];
+
+// Array reusable untuk render (mengurangi GC)
+const arrBiasa=[],arrSorot=[],arrSama=[],arrBeda=[];
+
+// ==========================================
+// 3. UTILITAS
+// ==========================================
+function mulberry32(a){return function(){a|=0;a=a+0x6D2B79F5|0;let t=Math.imul(a^a>>>15,1|a);t=t+Math.imul(t^t>>>7,61|t)^t;return((t^t>>>14)>>>0)/4294967296;};}
+function hashKisi(x,y){let h=(x*374761393+y*668265263)|0;h=Math.imul(h^(h>>>13),1274126177);return((h^(h>>>16))>>>0)/4294967295;}
+function vnoise(x,y){
+  const xi=Math.floor(x),yi=Math.floor(y),xf=x-xi,yf=y-yi;
+  const u=xf*xf*(3-2*xf),v=yf*yf*(3-2*yf);
+  const a=hashKisi(xi,yi),b=hashKisi(xi+1,yi),c=hashKisi(xi,yi+1),d=hashKisi(xi+1,yi+1);
+  return a+(b-a)*u+(c-a)*v+(a-b-c+d)*u*v;
 }
-window.addEventListener('resize', resize);
-resize();
-
-function worldToScreen(wx, wy) {
-  return {
-    x: (wx - kamera.x) * kamera.scale + lebar / 2,
-    y: (wy - kamera.y) * kamera.scale + tinggi / 2
-  };
+function goyang(x,y){
+  return [(vnoise(x/JITTER_SKALA,y/JITTER_SKALA)-0.5)*2*JITTER_KM,
+          (vnoise((x+311)/JITTER_SKALA,(y+977)/JITTER_SKALA)-0.5)*2*JITTER_KM];
 }
-
-function bbDalam(bb, view) {
-  // culling sederhana: kotak sektor vs kotak layar
-  return !(bb.maxX < view.minX || bb.minX > view.maxX ||
-           bb.maxY < view.minY || bb.minY > view.maxY);
+function clamp(v,a,b){return Math.max(a,Math.min(b,v));}
+function wrap(v,m){return((v%m)+m)%m;}
+function rgbaStr(rgb,a){return `rgba(${rgb[0]},${rgb[1]},${rgb[2]},${a})`;}
+function dalamKotak(p,k){return p.x>=k.x&&p.x<=k.x+k.w&&p.y>=k.y&&p.y<=k.y+k.h;}
+function posisi(e){const r=canvas.getBoundingClientRect();return{x:e.clientX-r.left,y:e.clientY-r.top};}
+function hslToRgb(h,s,l){
+  const c=(1-Math.abs(2*l-1))*s,hp=h/60,x=c*(1-Math.abs(hp%2-1)),m=l-c/2;
+  const t=[[c,x,0],[x,c,0],[0,c,x],[0,x,c],[x,0,c],[c,0,x]][Math.floor(hp)%6];
+  return t.map(v=>Math.round((v+m)*255));
 }
+function minta(){if(rafAktif)return;rafAktif=true;requestAnimationFrame(frame);}
 
-function jalurPoli(poli) {
-  if (!poli || poli.length === 0) return;
-  ctx.beginPath();
-  ctx.moveTo(poli[0].x, poli[0].y);
-  for (let i = 1; i < poli.length; i++) ctx.lineTo(poli[i].x, poli[i].y);
-  ctx.closePath();
-}
+const kosong=()=>[0,0,0,0];
+const poinArr=a=>a.reduce((s,v,k)=>s+v*POIN_K[k],0);
+const jumlahKapal=a=>a[0]+a[1]+a[2]+a[3];
+function tambah(a,b,s=1){for(let k=0;k<4;k++)a[k]+=b[k]*s;return a;}
+function ambilFrac(a,fr){const b=kosong();for(let k=0;k<4;k++){b[k]=a[k]*fr;a[k]-=b[k];}return b;}
 
-function jalurPoliCache(poli) {
-  if (!poli || poli.length === 0) return;
-  cacheCtx.beginPath();
-  cacheCtx.moveTo(poli[0].x, poli[0].y);
-  for (let i = 1; i < poli.length; i++) cacheCtx.lineTo(poli[i].x, poli[i].y);
-  cacheCtx.closePath();
-}
-
-/* ============================================================
-   GENERASI SEKTOR & WILAYAH (logika asli dipertahankan)
-   ============================================================ */
-function titikRandom(radius) {
-  return (Math.random() - 0.5) * 2 * radius;
-}
-
-function bangunSektor() {
-  sektor.length = 0;
-  const step = DUNIA_W / GRID_N;
-  for (let gx = 0; gx < GRID_N; gx++) {
-    for (let gy = 0; gy < GRID_N; gy++) {
-      const cx = -DUNIA_HALF + gx * step + step / 2 + titikRandom(step * 0.3);
-      const cy = -DUNIA_HALF + gy * step + step / 2 + titikRandom(step * 0.3);
-      const r = step * 0.45;
-      const poli = [];
-      const segmen = 6;
-      for (let s = 0; s < segmen; s++) {
-        const a = (s / segmen) * Math.PI * 2;
-        poli.push({ x: cx + Math.cos(a) * r, y: cy + Math.sin(a) * r });
-      }
-      const bb = {
-        minX: cx - r, maxX: cx + r,
-        minY: cy - r, maxY: cy + r
-      };
-      sektor.push({
-        id: gx * GRID_N + gy,
-        gx, gy, cx, cy, r, poli, bb,
-        owner: -1, // -1 = tidak ada
-        garnisun: 0,
-        kekuatan: 0,
-        markas: false
-      });
-    }
-  }
-}
-
-function bangunFaksi() {
-  FAKSI.length = 0;
-  for (let i = 0; i < 3; i++) {
-    FAKSI.push({
-      id: i,
-      nama: ['Faksi Aurora', 'Faksi Solaris', 'Faksi Nox'][i],
-      rgb: WARNA_FAKSI[i],
-      poin: 100,
-      markasSektor: null,
-      ekonomi: 50,
-      milik: []
-    });
-  }
-  // Tempatkan markas di sektor acak yang berjauhan
-  const urutan = sektor.map((s,i)=>i).sort(()=>Math.random()-0.5);
-  let ditempatkan = 0;
-  for (const idx of urutan) {
-    if (ditempatkan >= 3) break;
-    const s = sektor[idx];
-    if (s.owner !== -1) continue;
-    s.owner = ditempatkan;
-    s.markas = true;
-    s.kekuatan = 80;
-    FAKSI[ditempatkan].markasSektor = s.id;
-    FAKSI[ditempatkan].milik.push(s.id);
-    ditempatkan++;
-  }
-}
-
-function bangunWilayah() {
-  // Inisialisasi sisa sektor kepada faksi terdekat sederhana
-  for (const s of sektor) {
-    if (s.owner === -1) {
-      s.owner = Math.floor(Math.random() * 3);
-      s.garnisun = Math.floor(Math.random() * 20);
-      s.kekuatan = s.garnisun;
-      FAKSI[s.owner].milik.push(s.id);
-    }
-  }
-  cacheDirty = true;
-}
-
-/* ============================================================
-   HEAP EVENT & SIMULASI (optimasi #1: terpisah dari render)
-   ============================================================ */
-function heapPush(ev) {
+function heapPush(ev){
+  if(!Number.isFinite(ev.t)){galat++;galatPesan='waktu tidak valid';return;}
   heap.push(ev);
-  let i = heap.length - 1;
-  while (i > 0) {
-    const p = (i - 1) >> 1;
-    if (heap[p].t <= ev.t) break;
-    [heap[i], heap[p]] = [heap[p], heap[i]];
-    i = p;
-  }
+  let i=heap.length-1;
+  while(i>0){const p=(i-1)>>1;if(heap[p].t<=heap[i].t)break;[heap[p],heap[i]]=[heap[i],heap[p]];i=p;}
 }
-
-function heapPop() {
-  const top = heap[0];
-  const end = heap.pop();
-  if (heap.length) {
-    heap[0] = end;
-    let i = 0;
-    const n = heap.length;
-    while (true) {
-      let kecil = i;
-      const l = 2*i+1, r = 2*i+2;
-      if (l < n && heap[l].t < heap[kecil].t) kecil = l;
-      if (r < n && heap[r].t < heap[kecil].t) kecil = r;
-      if (kecil === i) break;
-      [heap[i], heap[kecil]] = [heap[kecil], heap[i]];
-      i = kecil;
+function heapPop(){
+  const top=heap[0],last=heap.pop();
+  if(heap.length){
+    heap[0]=last;let i=0;
+    for(;;){
+      const l=2*i+1,r=l+1;let m=i;
+      if(l<heap.length&&heap[l].t<heap[m].t)m=l;
+      if(r<heap.length&&heap[r].t<heap[m].t)m=r;
+      if(m===i)break;
+      [heap[m],heap[i]]=[heap[i],heap[m]];i=m;
     }
   }
   return top;
 }
 
-function prosesEvent(ev) {
-  switch (ev.tipe) {
-    case 'HARIAN':
-      harianFaksi();
-      break;
-    case 'SERANG':
-      serangSektor(ev.sektor, ev.dari);
-      break;
-    case 'PRODUKSI':
-      produksiKapal(ev.sektor);
-      break;
+// ==========================================
+// 4. LATAR BINTANG
+// ==========================================
+function buatBintang(){
+  const r=mulberry32(4242);bintang=[];
+  for(let i=0;i<BINTANG_N;i++){
+    const d=0.15+r()*0.85;
+    bintang.push({x:r(),y:r(),d,r:0.4+d*1.1,vx:(r()-0.5)*4,vy:(r()-0.5)*4,ph:r()*Math.PI*2,sp:0.6+r()*1.4,base:0.35+r()*0.5});
   }
 }
+function gambarBintang(){
+  const w=bgCanvas.width,h=bgCanvas.height;if(!w||!h)return;
+  const t=performance.now()/1000,ox=-kamera.x*kamera.skala,oy=-kamera.y*kamera.skala;
+  bgCtx.clearRect(0,0,w,h);
+  for(const s of bintang){
+    const x=wrap(s.x*w+s.vx*t+ox*s.d,w),y=wrap(s.y*h+s.vy*t+oy*s.d,h);
+    const a=s.base*(0.55+0.45*Math.sin(t*s.sp+s.ph));
+    bgCtx.fillStyle=`rgba(220,230,255,${a.toFixed(3)})`;
+    bgCtx.beginPath();bgCtx.arc(x,y,s.r,0,Math.PI*2);bgCtx.fill();
+  }
+}
+setInterval(()=>{if(!document.hidden&&!(ptr&&ptr.moved)&&!sedangBergerak())gambarBintang();},1000/BINTANG_HZ);
 
-function harianFaksi() {
-  for (const f of FAKSI) {
-    f.ekonomi += f.milik.length * 2;
-    if (f.ekonomi >= 50) {
-      f.ekonomi -= 50;
-      // cari sektor markas untuk produksi
-      const ms = sektor.find(s => s.id === f.markasSektor);
-      if (ms) heapPush({ t: tSim + 120, tipe: 'PRODUKSI', sektor: ms.id });
+// ==========================================
+// 5. SEKTOR, WILAYAH, JALUR
+// ==========================================
+function bangunSektor(){
+  const rnd=mulberry32(SEED);sektor=[];seedAt=new Array(GRID_N*GRID_N).fill(-1);
+  for(let gj=0;gj<GRID_N;gj++)for(let gi=0;gi<GRID_N;gi++){
+    const x=-DUNIA_HALF+(gi+0.5+(rnd()-0.5)*2*JITTER_SEL)*CELL_KM;
+    const y=-DUNIA_HALF+(gj+0.5+(rnd()-0.5)*2*JITTER_SEL)*CELL_KM;
+    seedAt[gi+gj*GRID_N]=sektor.length;
+    sektor.push({idx:sektor.length,x,y,gi,gj,owner:0,g:kosong(),medan:0,stasiun:false,nb:[],poli:[],tepi:[],bb:null,luas:0,id:''});
+  }
+  sektor.forEach((s,i)=>{
+    s.id='S-'+String(i+1).padStart(4,'0');
+    s.medan=clamp(vnoise(s.x/260+40,s.y/260+40)*0.7+vnoise(s.x/70+9,s.y/70)*0.3,0,1);
+    s.stasiun=hashKisi(s.gi*7+3,s.gj*13+5)>0.93;
+  });
+}
+
+function potongSetengah(poli,nx,ny,c){
+  const out=[];
+  for(let k=0;k<poli.length;k++){
+    const p=poli[k],q=poli[(k+1)%poli.length];
+    const dp=nx*p.x+ny*p.y-c,dq=nx*q.x+ny*q.y-c;
+    const pin=dp<=0,qin=dq<=0;
+    if(pin)out.push(p);
+    if(pin!==qin){const t=dp/(dp-dq);out.push({x:p.x+(q.x-p.x)*t,y:p.y+(q.y-p.y)*t});}
+  }
+  return out;
+}
+
+function bangunWilayah(){
+  const simpulMap=new Map();simpul=[];
+  const idSimpul=(x,y)=>{
+    const k=Math.round(x*1000)+','+Math.round(y*1000);
+    let id=simpulMap.get(k);
+    if(id===undefined){
+      id=simpul.length;
+      const tepi=Math.abs(Math.abs(x)-DUNIA_HALF)<1e-6||Math.abs(Math.abs(y)-DUNIA_HALF)<1e-6;
+      simpul.push({x,y,tepi});simpulMap.set(k,id);
     }
-  }
-  // jadwal harian berikutnya
-  heapPush({ t: tSim + 1440, tipe: 'HARIAN' });
-}
-
-function produksiKapal(sektorId) {
-  const s = sektor.find(x => x.id === sektorId);
-  if (!s) return;
-  s.garnisun += 5;
-  s.kekuatan = Math.min(100, s.kekuatan + 5);
-}
-
-function serangSektor(targetId, dariId) {
-  const t = sektor.find(x => x.id === targetId);
-  const d = sektor.find(x => x.id === dariId);
-  if (!t || !d) return;
-  const kerusakan = Math.floor(d.kekuatan * 0.3);
-  t.kekuatan = Math.max(0, t.kekuatan - kerusakan);
-  if (t.kekuatan <= 0 && t.owner !== d.owner) {
-    const lama = t.owner;
-    t.owner = d.owner;
-    // perbarui daftar milik faksi
-    const flama = FAKSI[lama];
-    flama.milik = flama.milik.filter(id => id !== t.id);
-    FAKSI[d.owner].milik.push(t.id);
-    cacheDirty = true;
-  }
-}
-
-function majWaktu() {
-  if (speedIdx === 0) return;
-  const faktor = KECEPATAN_SPEED[speedIdx];
-  const batas = tSim + faktor * (SIM_TICK_MS / 1000 / 60); // advance menit simulasi
-  const mulai = performance.now();
-  while (heap.length && heap[0].t <= batas) {
-    const ev = heapPop();
-    tSim = Math.max(tSim, ev.t);
-    prosesEvent(ev);
-    if (performance.now() - mulai > FRAME_BUDGET_MS) break;
-  }
-  tSim = Math.max(tSim, batas);
-}
-
-/* ============================================================
-   GARNISUN & RUTE (sederhana, utuh)
-   ============================================================ */
-function updateGarnisun() {
-  // Tidak ada logika berat di sini, hanya sinkronisasi visual
-}
-
-/* ============================================================
-   RENDER & CACHE WILAYAH (optimasi #2)
-   ============================================================ */
-function batasLayar() {
-  const s = kamera.scale;
-  return {
-    minX: (-lebar/2/s + kamera.x) - CELL_KM,
-    maxX: (lebar/2/s + kamera.x) + CELL_KM,
-    minY: (-tinggi/2/s + kamera.y) - CELL_KM,
-    maxY: (tinggi/2/s + kamera.y) + CELL_KM
+    return id;
   };
-}
-
-function bakeWilayahViewport() {
-  if (!cacheCanvas || cacheCanvas.width !== lebar || cacheCanvas.height !== tinggi) {
-    cacheCanvas = document.createElement('canvas');
-    cacheCanvas.width = lebar;
-    cacheCanvas.height = tinggi;
-    cacheCtx = cacheCanvas.getContext('2d', { alpha: false });
-  }
-  const v = batasLayar();
-  cacheCtx.clearRect(0, 0, lebar, tinggi);
-  let tergambar = 0;
-  for (const s of sektor) {
-    if (!bbDalam(s.bb, v)) continue;
-    const f = FAKSI[s.owner];
-    if (!f) continue;
-    // gambar poligon ke cache dalam koordinat layar
-    cacheCtx.beginPath();
-    let pertama = true;
-    for (const p of s.poli) {
-      const sp = worldToScreen(p.x, p.y);
-      if (pertama) { cacheCtx.moveTo(sp.x, sp.y); pertama = false; }
-      else cacheCtx.lineTo(sp.x, sp.y);
+  for(const a of sektor){
+    let poli=[{x:-DUNIA_HALF,y:-DUNIA_HALF},{x:DUNIA_HALF,y:-DUNIA_HALF},{x:DUNIA_HALF,y:DUNIA_HALF},{x:-DUNIA_HALF,y:DUNIA_HALF}];
+    for(let dj=-WINDOW_SEL;dj<=WINDOW_SEL;dj++)for(let di=-WINDOW_SEL;di<=WINDOW_SEL;di++){
+      if(di===0&&dj===0)continue;
+      const gi=a.gi+di,gj=a.gj+dj;
+      if(gi<0||gj<0||gi>=GRID_N||gj>=GRID_N)continue;
+      const b=sektor[seedAt[gi+gj*GRID_N]];
+      poli=potongSetengah(poli,b.x-a.x,b.y-a.y,(b.x*b.x+b.y*b.y-a.x*a.x-a.y*a.y)/2);
     }
-    cacheCtx.closePath();
-    cacheCtx.fillStyle = `rgba(${f.rgb[0]},${f.rgb[1]},${f.rgb[2]},0.18)`;
-    cacheCtx.fill();
-    cacheCtx.strokeStyle = `rgba(${f.rgb[0]},${f.rgb[1]},${f.rgb[2]},0.45)`;
-    cacheCtx.lineWidth = Math.max(0.6, 1.5 / kamera.scale);
-    cacheCtx.stroke();
-    tergambar++;
+    a.poli=poli.map(p=>idSimpul(p.x,p.y));
   }
-  cacheDirty = false;
-  lastCacheCam = { x: kamera.x, y: kamera.y, s: kamera.scale };
-}
-
-function gambarWilayahDariCache() {
-  // Periksa apakah kamera bergerak cukup jauh untuk invalidate cache
-  const dx = Math.abs(kamera.x - lastCacheCam.x);
-  const dy = Math.abs(kamera.y - lastCacheCam.y);
-  const ds = Math.abs(kamera.scale - lastCacheCam.s);
-  if (cacheDirty || dx > CACHE_INVALIDATE_PX / kamera.scale || dy > CACHE_INVALIDATE_PX / kamera.scale || ds > 0.1) {
-    bakeWilayahViewport();
-  }
-  ctx.drawImage(cacheCanvas, 0, 0);
-}
-
-function gambarGarnisun() {
-  if (kamera.scale < 0.4) return; // LOD: skip saat zoom jauh
-  const v = batasLayar();
-  for (const s of sektor) {
-    if (!bbDalam(s.bb, v)) continue;
-    if (s.garnisun <= 0) continue;
-    const sp = worldToScreen(s.cx, s.cy);
-    const f = FAKSI[s.owner];
-    ctx.fillStyle = `rgba(${f.rgb[0]},${f.rgb[1]},${f.rgb[2]},0.9)`;
-    ctx.beginPath();
-    ctx.arc(sp.x, sp.y, Math.max(2, 4 * kamera.scale), 0, Math.PI*2);
-    ctx.fill();
-  }
-}
-
-function gambarTitikSektor() {
-  if (kamera.scale < 0.5) return;
-  const v = batasLayar();
-  ctx.strokeStyle = 'rgba(255,255,255,0.06)';
-  ctx.lineWidth = 0.5;
-  for (const s of sektor) {
-    if (!bbDalam(s.bb, v)) continue;
-    const sp = worldToScreen(s.cx, s.cy);
-    ctx.beginPath();
-    ctx.arc(sp.x, sp.y, 1.5, 0, Math.PI*2);
-    ctx.stroke();
-  }
-}
-
-function latarBintang() {
-  // Gambar sekali ke canvas bintang, lalu drawImage
-  if (canvasBintang.width !== lebar || canvasBintang.height !== tinggi) {
-    canvasBintang.width = lebar;
-    canvasBintang.height = tinggi;
-    const n = 350;
-    ctxBintang.fillStyle = '#0b0c10';
-    ctxBintang.fillRect(0, 0, lebar, tinggi);
-    ctxBintang.fillStyle = '#e2e8f0';
-    for (let i = 0; i < n; i++) {
-      const x = Math.random() * lebar;
-      const y = Math.random() * tinggi;
-      const r = Math.random() * 1.2 + 0.5;
-      const a = 0.3 + Math.random() * 0.7;
-      ctxBintang.globalAlpha = a;
-      ctxBintang.beginPath();
-      ctxBintang.arc(x, y, r, 0, Math.PI*2);
-      ctxBintang.fill();
+  const sisiMap=new Map();tepiList=[];
+  for(const s of sektor){
+    s.tepi=[];const n=s.poli.length;
+    for(let k=0;k<n;k++){
+      const p=s.poli[k],q=s.poli[(k+1)%n];
+      if(p===q)continue;
+      const lo=Math.min(p,q),hi=Math.max(p,q),key=lo+'-'+hi;
+      let e=sisiMap.get(key);
+      if(!e){e={a:lo,b:hi,s:[]};sisiMap.set(key,e);tepiList.push(e);}
+      e.s.push(s.idx);
     }
-    ctxBintang.globalAlpha = 1;
   }
-  ctx.drawImage(canvasBintang, 0, 0);
-}
-
-function gambarUIStat() {
-  document.getElementById('sSektor').textContent = sektor.length;
-  document.getElementById('sFaksi').textContent = FAKSI.length;
-  const menit = Math.floor(tSim);
-  const jam = Math.floor(menit / 60);
-  const m = menit % 60;
-  document.getElementById('sSim').textContent = `${jam}:${String(m).padStart(2,'0')}`;
-  document.getElementById('sSpeed').textContent = LABEL_SPEED[speedIdx];
-}
-
-function frame() {
-  const now = performance.now();
-  latarBintang();
-
-  // --- RENDER WILAYAH (cache) ---
-  if (kamera.scale > 0.2) gambarWilayahDariCache();
-
-  // --- ENTITAS RINGAN ---
-  gambarGarnisun();
-  gambarTitikSektor();
-
-  // --- UI ---
-  gambarUIStat();
-
-  lastRender = now;
-  requestAnimationFrame(frame);
-}
-
-/* ============================================================
-   INPUT & KONTROL
-   ============================================================ */
-function aturTombolSpeed() {
-  for (let i = 0; i < 5; i++) {
-    const b = document.getElementById('btn' + i);
-    b.classList.toggle('active', i === speedIdx);
+  for(const v of simpul){
+    if(v.tepi)continue;
+    const[dx,dy]=goyang(v.x,v.y);
+    v.x=clamp(v.x+dx,-DUNIA_HALF,DUNIA_HALF);v.y=clamp(v.y+dy,-DUNIA_HALF,DUNIA_HALF);
+  }
+  for(const s of sektor){
+    const n=s.poli.length;let sum=0,minX=Infinity,minY=Infinity,maxX=-Infinity,maxY=-Infinity;
+    for(let k=0;k<n;k++){
+      const p=simpul[s.poli[k]],q=simpul[s.poli[(k+1)%n]];
+      sum+=p.x*q.y-q.x*p.y;
+      minX=Math.min(minX,p.x);maxX=Math.max(maxX,p.x);minY=Math.min(minY,p.y);maxY=Math.max(maxY,p.y);
+    }
+    s.luas=Math.abs(sum)/2;s.bb=[minX,minY,maxX,maxY];
+  }
+  for(const e of tepiList){
+    if(e.s.length===2){sektor[e.s[0]].nb.push(e.s[1]);sektor[e.s[1]].nb.push(e.s[0]);}
   }
 }
 
-function aturSpeed(idx) {
-  speedIdx = idx;
-  aturTombolSpeed();
-  // Langsung bereaksi (tanpa smoothing dtHalus)
-  if (idx !== 0 && heap.length === 0) {
-    // inisialisasi event pertama jika kosong
-    heapPush({ t: tSim + 1440, tipe: 'HARIAN' });
+function bangunJalur(){
+  jalurList=[];
+  for(const e of tepiList){
+    if(e.s.length!==2)continue;
+    const A=sektor[e.s[0]],B=sektor[e.s[1]];
+    jalurList.push({a:e.s[0],b:e.s[1],minX:Math.min(A.x,B.x),maxX:Math.max(A.x,B.x),minY:Math.min(A.y,B.y),maxY:Math.max(A.y,B.y)});
   }
 }
 
-window.addEventListener('load', () => {
-  for (let i = 0; i < 5; i++) {
-    document.getElementById('btn' + i).addEventListener('click', () => aturSpeed(i));
+// ==========================================
+// 6. FAKSI
+// ==========================================
+function bangunFaksi(){
+  const N=Math.round(sektor.length*FAKSI_RASIO),rnd=mulberry32(SEED+3),titik=[];
+  let minD=SPAWN_JARAK_MIN_KM,pc=0;
+  while(titik.length<N){
+    pc++;if(pc>300000){minD*=0.9;pc=0;}
+    const i=Math.floor(rnd()*sektor.length),s=sektor[i];
+    if(Math.hypot(s.x,s.y)>SPAWN_RADIUS_KM)continue;
+    if(titik.some(t=>Math.hypot(sektor[t].x-s.x,sektor[t].y-s.y)<minD))continue;
+    titik.push(i);
   }
+  FAKSI=[{id:0,nama:'Netral',rgb:[120,130,150],hidup:true,misi:[],milik:[],rumah:[0,0,0,0],intel:new Map()}];
+  titik.forEach((idx,k)=>{
+    const sifat={agresi:rnd(),hati:rnd(),ekspansi:rnd(),perluasan:rnd(),logistik:rnd(),ekonomi:rnd(),ketahanan:rnd()};
+    const f={
+      id:k+1,nama:`Faksi ${k+1}`,rgb:hslToRgb((k*137.508)%360,0.65,0.6),markas:idx,hidup:true,sifat,
+      rumah:kosong(),poin:POIN_AWAL,sibuk:0,misi:[],intel:new Map(),
+      puncak:false,radius:40,milik:[],stasiunN:0
+    };
+    FAKSI.push(f);
+    const s=sektor[idx];
+    s.owner=f.id;s.g=kosong();s.g[0]=MARKAS_AWAL_FREGAT;
+  });
+}
+
+function kelasTotal(f){
+  const t=kosong();tambah(t,f.rumah);
+  for(const i of f.milik)tambah(t,sektor[i].g);
+  for(const m of f.misi)if(m.state!=='parkir')tambah(t,m.pasukan);
+  return t;
+}
+const nilaiTotal=f=>poinArr(kelasTotal(f));
+function dikirimPoin(f){return f.misi.filter(m=>m.state!=='parkir').reduce((a,m)=>a+poinArr(m.pasukan),0);}
+function bisaKirim(f){return Math.max(0,nilaiTotal(f)*(1-CADANGAN)-dikirimPoin(f));}
+function maksMisi(f){return 2+Math.round(3*f.sifat.agresi);}
+
+function pertahanan(s){return s.owner===0?1+2*s.medan:poinArr(s.g)*BONUS_BERTAHAN;}
+
+function estimasi(f,s){
+  const k=f.intel.get(s.idx);
+  if(k)return k.d;
+  return s.owner===0?1+2*s.medan:(3+6*s.medan)*BONUS_BERTAHAN;
+}
+
+// ==========================================
+// 7. GARNISUN, PEMBAGIAN, PINDAH MANUAL
+// ==========================================
+function bobot(s,f){
+  return (s.idx===f.markas?4:1)+(s.stasiun?2:0)+(s.nb.some(q=>sektor[q].owner!==f.id)?1.5:0);
+}
+
+function placeRumah(f){
+  const milik=f.milik.map(i=>sektor[i]);
+  if(!milik.length)return;
+  for(const s of milik)if(s.g[0]<1&&f.rumah[0]>=1){f.rumah[0]-=1;s.g[0]+=1;}
+  const w=milik.map(s=>bobot(s,f)),W=w.reduce((a,b)=>a+b,0);
+  milik.forEach((s,i)=>tambah(s.g,f.rumah,w[i]/W));
+  f.rumah=kosong();
+}
+
+function cariRute(n,f){
+  const par=new Map([[n,-1]]);let depan=[n];
+  for(let d=0;d<PATH_MAKS&&depan.length;d++){
+    const nxt=[];
+    for(const x of depan)for(const y of sektor[x].nb){if(!par.has(y)){par.set(y,x);nxt.push(y);}}
+    depan=nxt;
+  }
+  const hasil=new Map();
+  for(const y of par.keys()){
+    if(y===n||sektor[y].owner!==f.id)continue;
+    const path=[];for(let c=y;c!==-1;c=par.get(c))path.push(c);
+    hasil.set(y,path);
+  }
+  return hasil;
+}
+function garnisunBebas(s){
+  const b=s.g.slice();
+  for(const F of FAKSI)for(const x of F.misi)if(x.state==='parkir'&&x.sek===s.idx)for(let k=0;k<4;k++)b[k]-=x.pasukan[k];
+  return b.map(v=>Math.max(0,v));
+}
+function ambilDariSektor(s,poinMinta){
+  const b=garnisunBebas(s),p=poinArr(b),out=kosong();
+  if(p<=0)return out;
+  const fr=Math.min(1,poinMinta/p);
+  for(let k=0;k<4;k++){out[k]=b[k]*fr;s.g[k]=Math.max(0,s.g[k]-out[k]);}
+  return out;
+}
+function aturPindah(f,t){
+  const milik=f.milik.map(i=>sektor[i]);
+  if(milik.length<2)return false;
+  const w=milik.map(s=>bobot(s,f)),W=w.reduce((a,b)=>a+b,0);
+  const N=milik.reduce((a,s)=>a+jumlahKapal(s.g),0);
+  let asal=null,tujuan=null,lebihA=0,kurangB=0;
+  milik.forEach((s,i)=>{
+    const ideal=N*w[i]/W,cur=jumlahKapal(s.g),d=cur-ideal;
+    if(d>=1&&d>lebihA&&cur>=2){asal=s;lebihA=d;}
+    if(-d>=1&&-d>kurangB){tujuan=s;kurangB=-d;}
+  });
+  if(!asal||!tujuan||asal===tujuan)return false;
+  const path=cariRute(tujuan.idx,f).get(asal.idx);
+  if(!path)return false;
+  let k=0;for(let j=1;j<4;j++)if(asal.g[j]>asal.g[k])k=j;
+  if(asal.g[k]<1)return false;
+  asal.g[k]-=1;
+  const kirim=kosong();kirim[k]=1;
+  const m={jenis:'pindah',state:'siap',f,path,hop:0,pasukan:kirim,sek:-1,dari:asal.idx,ke:path[1],mulai:t,tiba:t,batal:false};
+  f.misi.push(m);
+  departHop(m,t);
+  return true;
+}
+
+function departHop(m,t){
+  const a=sektor[m.path[m.hop]],b=sektor[m.path[m.hop+1]];
+  m.state='jalan';m.mulai=t;m.dari=a.idx;m.ke=b.idx;
+  m.tiba=t+Math.hypot(a.x-b.x,a.y-b.y)/KECEPATAN_KM_MENIT;
+  heapPush({t:m.tiba,k:'T',m});
+}
+
+// ==========================================
+// 8. EKONOMI, GALANGAN, SERANG
+// ==========================================
+function pilihKelas(f){
+  const a=f.sifat.agresi,h=f.sifat.hati,e=f.sifat.ekonomi;
+  const w=[1+2*a,0.5+a,0.3+1.5*h,0.05+h*e];
+  const tot=w.reduce((x,y)=>x+y,0);
+  let r=rngSim()*tot,k=0;
+  while(k<w.length-1&&r>=w[k]){r-=w[k];k++;}
+  if(KELAS[k].poin<=f.poin)return k;
+  if(KELAS[0].poin<=f.poin)return 0;
+  return -1;
+}
+
+function rencanaSerang(f,n,butuh,sisa){
+  const rute=cariRute(n,f);
+  const sumber=[...rute.entries()].sort((a,b)=>poinArr(garnisunBebas(sektor[b[0]]))-poinArr(garnisunBebas(sektor[a[0]])));
+  const rencana=[];let kumpul=0;
+  for(const [o,path] of sumber){
+    if(kumpul>=butuh)break;
+    const amt=Math.min(butuh-kumpul,sisa-kumpul,poinArr(garnisunBebas(sektor[o]))*0.9);
+    if(amt<=0)continue;
+    rencana.push({o,path,amt});kumpul+=amt;
+  }
+  return kumpul>=butuh-1e-9?rencana:null;
+}
+function pilihSasaran(f,t){
+  const m=sektor[f.markas],maks=LOGISTIK_MIN+LOGISTIK_RANGE*f.sifat.logistik;
+  const sisa=bisaKirim(f);
+  if(sisa<=0)return false;
+  const kand=new Set();
+  for(const o of f.milik){
+    if(poinArr(garnisunBebas(sektor[o]))<=0.5)continue;
+    for(const n of sektor[o].nb){
+      const ns=sektor[n];
+      if(ns.owner===f.id||Math.hypot(ns.x-m.x,ns.y-m.y)>maks)continue;
+      kand.add(n);
+    }
+  }
+  f.puncak=kand.size===0;
+  const calon=[];
+  for(const n of kand){
+    const ns=sektor[n],butuh=estimasi(f,ns)*MARGIN_SERANG;
+    const bers=ns.nb.filter(q=>sektor[q].owner===f.id).length;
+    const nilai=(0.5+ns.medan+(ns.stasiun?0.5:0))*(ns.owner===0?1+f.sifat.perluasan:1)*(1+0.2*bers*f.sifat.perluasan);
+    const pengali=ns.owner===0?1+f.sifat.ekspansi:0.5+f.sifat.agresi;
+    calon.push({n,butuh,skor:nilai*pengali/butuh*(0.9+0.2*rngSim())});
+  }
+  calon.sort((a,b)=>b.skor-a.skor);
+  for(const c of calon.slice(0,5)){
+    const rencana=rencanaSerang(f,c.n,c.butuh,sisa);
+    if(!rencana)continue;
+    for(const r of rencana){
+      const pasukan=ambilDariSektor(sektor[r.o],r.amt);
+      const mis={jenis:'serang',state:'siap',f,path:r.path,hop:0,pasukan,sek:-1,dari:r.o,ke:r.path[1],mulai:t,tiba:t,batal:false};
+      f.misi.push(mis);
+      heapPush({t:t+PERSIAPAN_MIN+PERSIAPAN_RENTANG*(1-f.sifat.ekspansi),k:'S',m:mis});
+    }
+    return true;
+  }
+  return false;
+}
+
+function setOwner(s,id){
+  if(s.owner>0){
+    const o=FAKSI[s.owner],i=o.milik.indexOf(s.idx);
+    if(i>=0){o.milik.splice(i,1);if(s.stasiun)o.stasiunN--;}
+  }
+  s.owner=id;
+  if(id>0){FAKSI[id].milik.push(s.idx);if(s.stasiun)FAKSI[id].stasiunN++;}
+  bakeKotor=true; // HANYA BAKE JIKA KEPEMILIKAN BERUBAH
+}
+
+function harianFaksi(f,t){
+  if(!f.hidup)return;
+  for(const i of f.milik)f.poin+=(0.5+sektor[i].medan)*(0.5+f.sifat.ekonomi);
+  const m=sektor[f.markas];let R=40;
+  for(const i of f.milik)R=Math.max(R,Math.hypot(sektor[i].x-m.x,sektor[i].y-m.y));
+  f.radius=R;
+  f.poin=Math.max(0,f.poin-PEMELIHARAAN*nilaiTotal(f));
+  placeRumah(f);
+  const slot=1+f.stasiunN;
+  while(f.sibuk<slot){
+    const k=pilihKelas(f);if(k<0)break;
+    f.poin-=KELAS[k].poin;f.sibuk++;
+    heapPush({t:t+KELAS[k].hari*MENIT_PER_HARI*(1.2-0.4*f.sifat.ekonomi),k:'B',f,d:k});
+  }
+  // OPTIMASI: Kurangi iterasi maksimal dari 20 menjadi 2/3 per hari
+  for(let i=0;i<2;i++)if(!aturPindah(f,t))break;
+  for(let i=0;i<3;i++)if(!pilihSasaran(f,t))break;
+  // bakeKotor=true; <- DIHAPUS DARI SINI, DIPINDAH KE setOwner
+}
+
+function saatKeluar(m,t){
+  if(m.batal)return;
+  const s=sektor[m.sek];
+  for(let k=0;k<4;k++)s.g[k]=Math.max(0,s.g[k]-m.pasukan[k]);
+  departHop(m,t);
+}
+
+function logKejadian(teks){
+  log.unshift(`Hari ${Math.floor(tSim/MENIT_PER_HARI)+1} ${teks}`);
+  if(log.length>8)log.length=8;
+}
+
+function selesai(m){m.state='selesai';m.f.misi=m.f.misi.filter(x=>x!==m);}
+function saatTiba(m,t){
+  if(m.batal)return;
+  const f=m.f;
+  m.hop++;
+  const s=sektor[m.path[m.hop]];
+  if(s.owner!==f.id){serangSektor(m,s);selesai(m);return;}
+  if(m.hop===m.path.length-1){tambah(s.g,m.pasukan);selesai(m);return;}
+  tambah(s.g,m.pasukan);
+  m.state='parkir';m.sek=s.idx;
+  heapPush({t:t+JEDA_PARKIR,k:'K',m});
+}
+
+function serangSektor(m,s){
+  const f=m.f,A=poinArr(m.pasukan),D=pertahanan(s),po=s.owner;
+  f.intel.set(s.idx,{d:D,t:tSim});
+  if(A>D){
+    const hasil=kosong();
+    tambah(hasil,m.pasukan,1-(D>0?D/A:0));
+    if(po>0)for(const F of FAKSI)F.misi=F.misi.filter(x=>{if(x.state==='parkir'&&x.sek===s.idx){x.batal=true;return false;}return true;});
+    setOwner(s,f.id);s.g=hasil;
+    if(po>0){
+      logKejadian(`${f.nama} merebut ${s.id} dari ${FAKSI[po].nama}`);
+      if(FAKSI[po].markas===s.idx)eliminasi(po);
+    }else logKejadian(`${f.nama} menguasai ${s.id}`);
+    return true;
+  }
+  if(po>0)potongGarnisun(s,Math.min(1,(A/D)*(1-0.3*FAKSI[po].sifat.ketahanan)));
+  if(Math.abs(A-D)<0.01){
+    const ps=sektor[m.path[m.hop-1]];
+    if(ps.owner===f.id)tambah(ps.g,m.pasukan);else tambah(f.rumah,m.pasukan);
+    logKejadian(`${f.nama} seri di ${s.id}, pasukan kembali`);
+  }else logKejadian(`${f.nama} kalah di ${s.id}`);
+  return false;
+}
+function potongGarnisun(s,fr){
+  ambilFrac(s.g,fr);
+  for(const F of FAKSI)for(const x of F.misi)if(x.state==='parkir'&&x.sek===s.idx)ambilFrac(x.pasukan,fr);
+}
+
+function eliminasi(po){
+  const F=FAKSI[po];
+  F.hidup=false;
+  for(const m of F.misi)m.batal=true;
+  F.misi=[];F.rumah=kosong();F.milik=[];
+  for(const s of sektor){
+    if(s.owner===po){setOwner(s,0);s.g=kosong();}
+  }
+  logKejadian(`${F.nama} tersingkir`);
+  bakeKotor=true;
+}
+
+function prosesEvent(ev){
+  try{
+    if(ev.k==='F'){if(ev.f.hidup)heapPush({t:ev.t+MENIT_PER_HARI,k:'F',f:ev.f});harianFaksi(ev.f,ev.t);}
+    else if(ev.k==='S'){departHop(ev.m,ev.t);}
+    else if(ev.k==='T'){saatTiba(ev.m,ev.t);}
+    else if(ev.k==='K'){saatKeluar(ev.m,ev.t);}
+    else if(ev.k==='B'){ev.f.sibuk--;if(ev.f.hidup)ev.f.rumah[ev.d]+=1;}
+  }catch(err){galat++;galatPesan=`${ev.k}: ${err&&err.message?err.message:err}`;console.error(err);}
+}
+
+function majuWaktu(dtDetik){
+  const kec=KECEPATAN_SPEED[speedIdx];
+  if(kec===0)return;
+  const mulai=performance.now();
+  const batas=tSim+kec*dtDetik;
+  while(heap.length&&heap[0].t<=batas){
+    if(performance.now()-mulai>FRAME_BUDGET_MS)break;
+    const ev=heapPop();
+    tSim=Math.max(tSim,ev.t);
+    prosesEvent(ev);
+  }
+  tSim=Math.max(tSim,batas);
+}
+
+// ==========================================
+// 9. KAMERA DAN INPUT
+// ==========================================
+function fadeSektor(){return clamp((kamera.skala-SKALA_FADE_MULAI)/(SKALA_FADE_SELESAI-SKALA_FADE_MULAI),0,1);}
+function toSX(xKm){return(xKm-kamera.x)*kamera.skala+canvas.width/2;}
+function toSY(yKm){return(yKm-kamera.y)*kamera.skala+canvas.height/2;}
+function dariSX(sx){return(sx-canvas.width/2)/kamera.skala+kamera.x;}
+function dariSY(sy){return(sy-canvas.height/2)/kamera.skala+kamera.y;}
+
+function batasKamera(){
+  const hw=canvas.width/2/kamera.skala,hh=canvas.height/2/kamera.skala;
+  let minX=-DUNIA_HALF+hw,maxX=DUNIA_HALF-hw,minY=-DUNIA_HALF+hh,maxY=DUNIA_HALF-hh;
+  if(minX>maxX){minX=maxX=0;}
+  if(minY>maxY){minY=maxY=0;}
+  return{minX,maxX,minY,maxY};
+}
+function sedangBergerak(){
+  const b=batasKamera();
+  const xKeluar=kamera.x<b.minX||kamera.x>b.maxX,yKeluar=kamera.y<b.minY||kamera.y>b.maxY;
+  return xKeluar||yKeluar||Math.abs(vel.x)>0.5||Math.abs(vel.y)>0.5;
+}
+function langkahSumbu(sumbu,lo,hi,dt){
+  const pos=kamera[sumbu],target=clamp(pos,lo,hi),over=pos-target;
+  const a=over!==0?-PEGAS_K*over-PEGAS_D*vel[sumbu]:-GESEK*vel[sumbu];
+  vel[sumbu]+=a*dt;kamera[sumbu]+=vel[sumbu]*dt;
+  const sisa=kamera[sumbu]-clamp(kamera[sumbu],lo,hi);
+  if(Math.abs(sisa)<0.01&&Math.abs(vel[sumbu])<0.5){kamera[sumbu]=clamp(kamera[sumbu],lo,hi);vel[sumbu]=0;}
+}
+function fisika(dt){
+  const b=batasKamera();
+  langkahSumbu('x',b.minX,b.maxX,dt);langkahSumbu('y',b.minY,b.maxY,dt);
+}
+function ubahZoom(arah){
+  kamera.skala=clamp(kamera.skala*(arah>0?SKALA_LANGKAH:1/SKALA_LANGKAH),SKALA_MIN,SKALA_MAX);
+  bersihkanPilihan();minta();
+}
+function bersihkanPilihan(){
+  const sA=fadeSektor(),fA=1-sA;
+  if(sA<0.3)dipilih=-1;
+  if(fA<0.3)dipilihFaksi=-1;
+}
+function hitungFling(){
+  const h=ptr.hist;if(h.length<2)return{x:0,y:0};
+  const a=h[0],b=h[h.length-1],now=performance.now();
+  if(now-b.t>80)return{x:0,y:0};
+  const dt=(b.t-a.t)/1000;if(dt<0.016)return{x:0,y:0};
+  let vx=(b.x-a.x)/dt,vy=(b.y-a.y)/dt;
+  const maks=FLING_MAX_PX/kamera.skala,mag=Math.hypot(vx,vy);
+  if(mag>maks){vx*=maks/mag;vy*=maks/mag;}
+  return{x:vx,y:vy};
+}
+function tombolKanan(){
+  return[
+    {id:'pusat',x:canvas.width-86,y:10,w:76,h:32,t:'PUSAT'},
+    {id:'+',x:canvas.width-54,y:canvas.height/2-60,w:44,h:44,t:'+'},
+    {id:'-',x:canvas.width-54,y:canvas.height/2+10,w:44,h:44,t:'−'}
+  ];
+}
+function tombolSpeedAt(i){return{id:'speed'+i,x:8+i*62,y:canvas.height-40,w:56,h:30,t:LABEL_SPEED[i]};}
+function didalamPoli(poli,x,y){
+  let dalam=false;
+  for(let k=0,m=poli.length-1;k<poli.length;m=k++){
+    const a=simpul[poli[k]],b=simpul[poli[m]];
+    if((a.y>y)!==(b.y>y)&&x<(b.x-a.x)*(y-a.y)/(b.y-a.y)+a.x)dalam=!dalam;
+  }
+  return dalam;
+}
+function sektorDiTitik(x,y){
+  const gi=Math.floor((x+DUNIA_HALF)/CELL_KM),gj=Math.floor((y+DUNIA_HALF)/CELL_KM);
+  for(let dj=-1;dj<=1;dj++)for(let di=-1;di<=1;di++){
+    const ci=gi+di,cj=gj+dj;
+    if(ci<0||cj<0||ci>=GRID_N||cj>=GRID_N)continue;
+    const i=seedAt[ci+cj*GRID_N];
+    if(didalamPoli(sektor[i].poli,x,y))return i;
+  }
+  return -1;
+}
+function tap(p){
+  for(const b of tombolKanan()){
+    if(!dalamKotak(p,b))continue;
+    if(b.id==='+')return ubahZoom(1);
+    if(b.id==='-')return ubahZoom(-1);
+    kamera.x=0;kamera.y=0;kamera.skala=SKALA_MIN;vel.x=0;vel.y=0;
+    dipilih=-1;dipilihFaksi=-1;return minta();
+  }
+  for(let i=0;i<LABEL_SPEED.length;i++){
+    if(dalamKotak(p,tombolSpeedAt(i))){speedIdx=i;return minta();}
+  }
+  const sA0=fadeSektor();
+  let best=-1,bd=sA0<0.3?14:0;
+  for(const f of FAKSI){
+    if(f.id===0||!f.hidup)continue;
+    const m=sektor[f.markas];
+    const d=Math.hypot(toSX(m.x)-p.x,toSY(m.y)-p.y);
+    if(d<bd){bd=d;best=f.id;}
+  }
+  if(best>0){dipilihFaksi=best;dipilih=-1;return minta();}
+  const xKm=dariSX(p.x),yKm=dariSY(p.y),i=sektorDiTitik(xKm,yKm),sA=fadeSektor();
+  if(sA>0.3){dipilihFaksi=-1;dipilih=(i===dipilih)?-1:i;}
+  else if(i>=0){const o=sektor[i].owner;dipilih=-1;dipilihFaksi=(o>0&&o!==dipilihFaksi)?o:-1;}
+  minta();
+}
+
+function resize(){
+  canvas.width=window.innerWidth;canvas.height=window.innerHeight;
+  bgCanvas.width=window.innerWidth;bgCanvas.height=window.innerHeight;
+  minta();
+}
+window.addEventListener('resize',resize);
+canvas.addEventListener('pointerdown',e=>{
+  e.preventDefault();const p=posisi(e);
+  vel.x=0;vel.y=0;
+  ptr={sx:p.x,sy:p.y,lx:p.x,ly:p.y,moved:false,hist:[{t:performance.now(),x:kamera.x,y:kamera.y}]};
 });
+canvas.addEventListener('pointermove',e=>{
+  if(!ptr)return;e.preventDefault();
+  const p=posisi(e);
+  if(Math.hypot(p.x-ptr.sx,p.y-ptr.sy)>6)ptr.moved=true;
+  if(ptr.moved){
+    const b=batasKamera();
+    let dxKm=-(p.x-ptr.lx)/kamera.skala,dyKm=-(p.y-ptr.ly)/kamera.skala;
+    if((kamera.x<b.minX&&dxKm<0)||(kamera.x>b.maxX&&dxKm>0))dxKm*=RUBBER_FAKTOR;
+    if((kamera.y<b.minY&&dyKm<0)||(kamera.y>b.maxY&&dyKm>0))dyKm*=RUBBER_FAKTOR;
+    kamera.x+=dxKm;kamera.y+=dyKm;
+    const cap=(MARGIN_PX*1.5)/kamera.skala;
+    kamera.x=clamp(kamera.x,b.minX-cap,b.maxX+cap);
+    kamera.y=clamp(kamera.y,b.minY-cap,b.maxY+cap);
+    const now=performance.now();
+    ptr.hist.push({t:now,x:kamera.x,y:kamera.y});
+    while(ptr.hist.length>2&&now-ptr.hist[0].t>100)ptr.hist.shift();
+    minta();
+  }
+  ptr.lx=p.x;ptr.ly=p.y;
+});
+canvas.addEventListener('pointerup',e=>{
+  if(!ptr)return;
+  const p=posisi(e);
+  if(!ptr.moved)tap(p);
+  else{const v=hitungFling();vel.x=v.x;vel.y=v.y;}
+  ptr=null;minta();
+});
+canvas.addEventListener('pointercancel',()=>{ptr=null;minta();});
 
-canvas.addEventListener('pointerdown', e => {
-  drag.aktif = true;
-  drag.sx = e.clientX; drag.sy = e.clientY;
-  drag.kx = kamera.x; drag.ky = kamera.y;
-  cacheDirty = true;
-}, { passive: false });
-
-window.addEventListener('pointermove', e => {
-  if (!drag.aktif) return;
-  const dx = (e.clientX - drag.sx) / kamera.scale;
-  const dy = (e.clientY - drag.sy) / kamera.scale;
-  kamera.x = drag.kx - dx;
-  kamera.y = drag.ky - dy;
-  // batasi kamera agar tidak keluar dunia terlalu jauh
-  kamera.x = Math.max(-DUNIA_W*1.5, Math.min(DUNIA_W*1.5, kamera.x));
-  kamera.y = Math.max(-DUNIA_HALF*1.5, Math.min(DUNIA_HALF*1.5, kamera.y));
-  cacheDirty = true;
-}, { passive: false });
-
-window.addEventListener('pointerup', () => { drag.aktif = false; });
-
-canvas.addEventListener('wheel', e => {
-  e.preventDefault();
-  const before = kamera.scale;
-  const delta = -e.deltaY * 0.001;
-  let scaleBaru = kamera.scale * (1 + delta);
-  scaleBaru = Math.max(0.15, Math.min(4, scaleBaru));
-  // zoom terhadap posisi pointer
-  const mx = e.clientX - lebar/2;
-  const my = e.clientY - tinggi/2;
-  const wx = mx / before + kamera.x;
-  const wy = my / before + kamera.y;
-  kamera.scale = scaleBaru;
-  kamera.x = wx - mx / kamera.scale;
-  kamera.y = wy - my / kamera.scale;
-  cacheDirty = true;
-}, { passive: false });
-
-/* ============================================================
-   INISIALISASI & LOOP
-   ============================================================ */
-function init() {
-  bangunSektor();
-  bangunFaksi();
-  bangunWilayah();
-  aturTombolSpeed();
-  // Event pertama
-  heapPush({ t: tSim + 1440, tipe: 'HARIAN' });
-  requestAnimationFrame(frame);
+// ==========================================
+// 10. GAMBAR
+// ==========================================
+function batasLayar(){return{x0:dariSX(0),x1:dariSX(canvas.width),y0:dariSY(0),y1:dariSY(canvas.height)};}
+function bbDalam(bb,v){return bb[2]>=v.x0&&bb[0]<=v.x1&&bb[3]>=v.y0&&bb[1]<=v.y1;}
+function jalurPoli(poli){
+  let v=simpul[poli[0]];ctx.moveTo(toSX(v.x),toSY(v.y));
+  for(let k=1;k<poli.length;k++){v=simpul[poli[k]];ctx.lineTo(toSX(v.x),toSY(v.y));}
+  ctx.closePath();
+}
+function sektorAlpha(s){
+  if(s.owner===0)return NETRAL_ALPHA;
+  const f=FAKSI[s.owner],m=sektor[f.markas],d=Math.hypot(s.x-m.x,s.y-m.y);
+  return ALPHA_TEPI+(ALPHA_PUSAT-ALPHA_TEPI)*Math.max(0,1-d/f.radius);
+}
+function bakeWilayah(){
+  if(bakeCanvas.width!==BAKE_PX){bakeCanvas.width=BAKE_PX;bakeCanvas.height=BAKE_PX;}
+  bakeCtx.clearRect(0,0,BAKE_PX,BAKE_PX);
+  for(const s of sektor){
+    const f=FAKSI[s.owner];
+    bakeCtx.fillStyle=rgbaStr(f.rgb,sektorAlpha(s).toFixed(3));
+    bakeCtx.beginPath();
+    for(let k=0;k<s.poli.length;k++){
+      const p=simpul[s.poli[k]];
+      const px=(p.x+DUNIA_HALF)/BAKE_KM_PER_PX,py=(p.y+DUNIA_HALF)/BAKE_KM_PER_PX;
+      if(k===0)bakeCtx.moveTo(px,py);else bakeCtx.lineTo(px,py);
+    }
+    bakeCtx.closePath();bakeCtx.fill();
+  }
+}
+function gambarWilayahVektor(sA){
+  if(sA<0.01)return;
+  const v=batasLayar();
+  for(const s of sektor){
+    if(!bbDalam(s.bb,v))continue;
+    const f=FAKSI[s.owner];
+    const redup=dipilihFaksi>0&&s.owner!==dipilihFaksi?REDUP_LAIN:1;
+    ctx.fillStyle=rgbaStr(f.rgb,(sektorAlpha(s)*redup*sA).toFixed(3));
+    ctx.beginPath();jalurPoli(s.poli);ctx.fill();
+  }
+}
+function gambarGrid(){
+  const px=GRID_KM*kamera.skala;if(px<GRID_MIN_PX)return;
+  const v=batasLayar();
+  ctx.strokeStyle=`rgba(120,130,160,${GRID_ALPHA})`;ctx.lineWidth=1;ctx.beginPath();
+  const xMulai=Math.max(-DUNIA_HALF,Math.ceil(v.x0/GRID_KM)*GRID_KM),xAkhir=Math.min(DUNIA_HALF,v.x1);
+  for(let x=xMulai;x<=xAkhir;x+=GRID_KM){const sx=Math.round(toSX(x))+0.5;ctx.moveTo(sx,0);ctx.lineTo(sx,canvas.height);}
+  const yMulai=Math.max(-DUNIA_HALF,Math.ceil(v.y0/GRID_KM)*GRID_KM),yAkhir=Math.min(DUNIA_HALF,v.y1);
+  for(let y=yMulai;y<=yAkhir;y+=GRID_KM){const sy=Math.round(toSY(y))+0.5;ctx.moveTo(0,sy);ctx.lineTo(canvas.width,sy);}
+  ctx.stroke();
+}
+function gambarLuarPeta(){
+  const x0=toSX(-DUNIA_HALF),y0=toSY(-DUNIA_HALF),x1=toSX(DUNIA_HALF),y1=toSY(DUNIA_HALF);
+  ctx.save();ctx.beginPath();
+  ctx.rect(0,0,canvas.width,canvas.height);ctx.rect(x0,y0,x1-x0,y1-y0);
+  ctx.fillStyle=`rgba(0,0,0,${LUAR_ALPHA})`;ctx.fill('evenodd');ctx.restore();
+}
+function strokeSimpul(list){
+  if(!list.length)return;
+  ctx.beginPath();
+  for(const e of list){const a=simpul[e.a],b=simpul[e.b];ctx.moveTo(toSX(a.x),toSY(a.y));ctx.lineTo(toSX(b.x),toSY(b.y));}
+  ctx.stroke();
+}
+function gambarBatas(){
+  arrBiasa.length = 0; arrSorot.length = 0;
+  const v=batasLayar();
+  for(const e of tepiList){
+    const a=simpul[e.a],b=simpul[e.b];
+    if(Math.max(a.x,b.x)<v.x0||Math.min(a.x,b.x)>v.x1||Math.max(a.y,b.y)<v.y0||Math.min(a.y,b.y)>v.y1)continue;
+    if(e.s.length===1){arrBiasa.push(e);continue;}
+    const o1=sektor[e.s[0]].owner,o2=sektor[e.s[1]].owner;
+    if(o1===o2)continue;
+    if(dipilihFaksi>0&&(o1===dipilihFaksi||o2===dipilihFaksi))arrSorot.push(e);
+    else arrBiasa.push(e);
+  }
+  ctx.lineCap='round';ctx.lineJoin='round';
+  ctx.strokeStyle='rgba(255,255,255,0.22)';ctx.lineWidth=0.8;strokeSimpul(arrBiasa);
+  if(arrSorot.length){ctx.strokeStyle='rgba(253,224,71,0.9)';ctx.lineWidth=1.6;strokeSimpul(arrSorot);}
+}
+function strokeGaris(list){
+  if(!list.length)return;
+  ctx.beginPath();
+  for(const j of list){const A=sektor[j.a],B=sektor[j.b];ctx.moveTo(toSX(A.x),toSY(A.y));ctx.lineTo(toSX(B.x),toSY(B.y));}
+  ctx.stroke();
+}
+function gambarJalur(sA){
+  const sJalur=Math.max(sA,clamp((kamera.skala-JALUR_MULAI_ZOOM)/(JALUR_PENUH_ZOOM-JALUR_MULAI_ZOOM),0,1));
+  if(sJalur<0.01)return;
+  arrSama.length = 0; arrBeda.length = 0;
+  const v=batasLayar();
+  for(const j of jalurList){
+    if(j.maxX<v.x0||j.minX>v.x1||j.maxY<v.y0||j.minY>v.y1)continue;
+    if(sektor[j.a].owner===sektor[j.b].owner)arrSama.push(j);else arrBeda.push(j);
+  }
+  ctx.lineWidth=0.6;ctx.strokeStyle=`rgba(200,210,255,${(ALPHA_JALUR*sJalur).toFixed(3)})`;strokeGaris(arrSama);
+  ctx.lineWidth=0.9;ctx.strokeStyle=`rgba(255,255,255,${(ALPHA_JALUR_LINTAS*sJalur).toFixed(3)})`;strokeGaris(arrBeda);
+}
+function gambarTitikSektor(sA){
+  if(sA<0.01)return;
+  const v=batasLayar();
+  ctx.globalAlpha=sA;
+  for(const s of sektor){
+    if(!bbDalam(s.bb,v))continue;
+    ctx.fillStyle=rgbaStr(FAKSI[s.owner].rgb,1);
+    ctx.fillRect(toSX(s.x)-1.5,toSY(s.y)-1.5,3,3);
+  }
+  if(dipilih>=0){
+    const s=sektor[dipilih];
+    ctx.strokeStyle='#fde68a';ctx.lineWidth=2;
+    ctx.beginPath();ctx.arc(toSX(s.x),toSY(s.y),9,0,Math.PI*2);ctx.stroke();
+  }
+  ctx.globalAlpha=1;
+}
+function gambarMarkas(){
+  for(const f of FAKSI){
+    if(f.id===0||!f.hidup)continue;
+    const m=sektor[f.markas],sx=toSX(m.x),sy=toSY(m.y);
+    if(sx<-20||sy<-20||sx>canvas.width+20||sy>canvas.height+20)continue;
+    const sel=f.id===dipilihFaksi;
+    ctx.globalAlpha=(sel||dipilihFaksi<0)?1:0.35;
+    ctx.beginPath();ctx.arc(sx,sy,sel?6:3.5,0,Math.PI*2);
+    ctx.fillStyle=rgbaStr(f.rgb,1);ctx.fill();
+    if(sel){
+      ctx.strokeStyle='#ffffff';ctx.lineWidth=2;ctx.stroke();
+      ctx.font='12px monospace';ctx.textAlign='center';ctx.textBaseline='top';
+      ctx.fillStyle='#fde68a';ctx.fillText(f.nama,sx,sy+10);
+    }
+  }
+  ctx.globalAlpha=1;
+}
+function gambarArmada(){
+  const pulsa=0.5+0.5*Math.sin(performance.now()/300);
+  for(const f of FAKSI){
+    if(f.id===0||!f.hidup)continue;
+    for(const m of f.misi){
+      if(m.state==='parkir')continue;
+      if(m.state!=='jalan'){
+        const a=sektor[m.dari];
+        ctx.beginPath();ctx.arc(toSX(a.x),toSY(a.y),5+4*pulsa,0,Math.PI*2);
+        ctx.strokeStyle=rgbaStr(f.rgb,0.8);ctx.lineWidth=1.5;ctx.stroke();
+        continue;
+      }
+      const u=clamp((tSim-m.mulai)/(m.tiba-m.mulai),0,1),a=sektor[m.dari],b=sektor[m.ke];
+      const x=a.x+(b.x-a.x)*u,y=a.y+(b.y-a.y)*u;
+      const r=Math.min(10,2+Math.sqrt(poinArr(m.pasukan))*0.7,Math.max(1.5,0.4*CELL_KM*kamera.skala));
+      ctx.beginPath();ctx.arc(toSX(x),toSY(y),r,0,Math.PI*2);
+      ctx.fillStyle=rgbaStr(f.rgb,1);ctx.fill();
+      ctx.strokeStyle='#ffffff';ctx.lineWidth=1;ctx.stroke();
+    }
+  }
+}
+function gambarSorotFaksi(){
+  if(dipilihFaksi<=0||!FAKSI[dipilihFaksi].hidup)return;
+  const f=FAKSI[dipilihFaksi],v=batasLayar();
+  ctx.fillStyle=rgbaStr(f.rgb,0.35);
+  for(const i of f.milik){
+    const s=sektor[i];if(!bbDalam(s.bb,v))continue;
+    ctx.beginPath();jalurPoli(s.poli);ctx.fill();
+  }
+}
+function gambarSorotSektor(sA){
+  if(dipilih<0||sA<0.01)return;
+  const s=sektor[dipilih];
+  ctx.globalAlpha=sA;
+  ctx.fillStyle='rgba(253,224,71,0.25)';
+  ctx.beginPath();jalurPoli(s.poli);ctx.fill();
+  ctx.strokeStyle='#fde68a';ctx.lineWidth=2;
+  ctx.beginPath();jalurPoli(s.poli);ctx.stroke();
+  ctx.globalAlpha=1;
+}
+function gambarRute(){
+  ctx.setLineDash([4,4]);ctx.lineWidth=1;
+  for(const f of FAKSI){
+    if(f.id===0||!f.hidup)continue;
+    for(const m of f.misi){
+      if(m.state!=='jalan')continue;
+      const a=sektor[m.dari],b=sektor[m.ke];
+      ctx.strokeStyle=rgbaStr(f.rgb,0.55);
+      ctx.beginPath();ctx.moveTo(toSX(a.x),toSY(a.y));ctx.lineTo(toSX(b.x),toSY(b.y));ctx.stroke();
+    }
+  }
+  ctx.setLineDash([]);
+}
+function gambarGarnisun(sA){
+  // OPTIMASI: Jangan render teks jika zoom terlalu kecil
+  if(sA<0.5 || kamera.skala < 1.2)return; 
+  const v=batasLayar();
+  ctx.globalAlpha=sA;ctx.font='9px monospace';ctx.textAlign='center';ctx.textBaseline='middle';ctx.fillStyle='#ffffff';
+  for(const s of sektor){
+    if(s.owner===0||!bbDalam(s.bb,v))continue;
+    const n=Math.floor(jumlahKapal(s.g));
+    if(n>0)ctx.fillText(String(n),toSX(s.x),toSY(s.y));
+  }
+  ctx.globalAlpha=1;
+}
+function kotakTeks(x,y,w,h){
+  ctx.fillStyle='rgba(0,0,0,0.75)';ctx.fillRect(x,y,w,h);
+  ctx.strokeStyle='#fde68a';ctx.lineWidth=1;ctx.strokeRect(x+0.5,y+0.5,w-1,h-1);
+}
+let panelCache={at:-1e9,hidup:0,netral:0,kapal:0};
+function gambarPanel(){
+  if(performance.now()-panelCache.at>1000){
+    let hidup=0,netral=0,kapal=0;
+    let terbanyak={n:0,nama:'-'};
+    for(const f of FAKSI)if(f.id>0&&f.hidup){const j=jumlahKapal(kelasTotal(f));hidup++;kapal+=j;if(j>terbanyak.n)terbanyak={n:j,nama:f.nama};}
+    for(const s of sektor)if(s.owner===0)netral++;
+    panelCache={at:performance.now(),hidup,netral,kapal,terbanyak};
+  }
+  const {hidup,netral,kapal,terbanyak}=panelCache;
+  const hari=Math.floor(tSim/MENIT_PER_HARI)+1;
+  const jam=String(Math.floor((tSim%MENIT_PER_HARI)/60)).padStart(2,'0');
+  const menit=String(Math.floor(tSim%60)).padStart(2,'0');
+  kotakTeks(8,8,380,116);
+  ctx.fillStyle='#fde68a';ctx.font='13px monospace';ctx.textAlign='left';ctx.textBaseline='top';
+  ctx.fillText('PETA ANTAR SEKTOR '+VERSI,16,14);
+  ctx.fillText(`Hari ${hari}  ${jam}:${menit}   ${LABEL_SPEED[speedIdx]}`,16,34);
+  ctx.fillText(`Faksi hidup: ${hidup}   Netral: ${netral}`,16,52);
+  ctx.fillText(`Kapal total: ${Math.floor(kapal)}   Terbanyak: ${terbanyak.nama} ${Math.floor(terbanyak.n)}`,16,68);
+  ctx.fillText(`Zoom: ${kamera.skala.toFixed(2)}   Galat: ${galat}`,16,84);
+  if(galatPesan){ctx.font='11px monospace';ctx.fillStyle='#f87171';ctx.fillText(galatPesan.slice(0,48),16,100);}
+}
+function gambarInfo(){
+  let baris=null,judul='',warna=[253,224,71];
+  if(dipilihFaksi>0&&FAKSI[dipilihFaksi].hidup){
+    const f=FAKSI[dipilihFaksi],k=kelasTotal(f);
+    judul=f.nama;warna=f.rgb;
+    baris=[
+      `Markas ${sektor[f.markas].id}   Sektor ${f.milik.length}   Intel ${f.intel.size}`,
+      `Poin ${f.poin.toFixed(1)}   Kekuatan ${poinArr(k).toFixed(0)}   Galangan ${f.sibuk}/${1+f.stasiunN}`,
+      `Kapal F${k[0].toFixed(0)} K${k[1].toFixed(0)} KP${k[2].toFixed(0)} R${k[3].toFixed(0)}`,
+      `Serang ${f.misi.filter(m=>m.jenis==='serang').length}   Pindah ${f.misi.filter(m=>m.jenis==='pindah').length}   ${f.puncak?'puncak':''}`,
+      `Agresi ${f.sifat.agresi.toFixed(2)} Hati ${f.sifat.hati.toFixed(2)} Ekspansi ${f.sifat.ekspansi.toFixed(2)}`,
+      `Perluasan ${f.sifat.perluasan.toFixed(2)} Logistik ${f.sifat.logistik.toFixed(2)} Ekonomi ${f.sifat.ekonomi.toFixed(2)} Tahan ${f.sifat.ketahanan.toFixed(2)}`
+    ];
+  }else if(dipilih>=0){
+    const s=sektor[dipilih],f=FAKSI[s.owner],g=s.g;
+    judul=`${s.id}  (${f.nama})`;
+    baris=[
+      `Medan ${s.medan.toFixed(2)}   Stasiun ${s.stasiun?'ada':'tidak'}   Luas ${s.luas.toFixed(0)} km²`,
+      `Pertahanan ${pertahanan(s).toFixed(1)}`,
+      `Garnisun F${g[0].toFixed(0)} K${g[1].toFixed(0)} KP${g[2].toFixed(0)} R${g[3].toFixed(0)}`
+    ];
+  }else return;
+  const pw=340,ph=26+baris.length*16+8,px=8,py=canvas.height-40-12-ph;
+  kotakTeks(px,py,pw,ph);
+  ctx.fillStyle=rgbaStr(warna,1);ctx.font='13px monospace';ctx.textAlign='left';ctx.textBaseline='top';
+  ctx.fillText(judul,px+10,py+8);
+  ctx.fillStyle='#e5e7eb';ctx.font='11px monospace';
+  baris.forEach((t,i)=>ctx.fillText(t,px+10,py+26+i*16));
+}
+function gambarTombol(b,aktif){
+  ctx.fillStyle=aktif?'rgba(253,224,71,0.35)':'rgba(0,0,0,0.7)';
+  ctx.fillRect(b.x,b.y,b.w,b.h);
+  ctx.strokeStyle='#fde68a';ctx.lineWidth=2;ctx.strokeRect(b.x,b.y,b.w,b.h);
+  ctx.fillStyle='#fde68a';ctx.font='13px monospace';ctx.textAlign='center';ctx.textBaseline='middle';
+  ctx.fillText(b.t,b.x+b.w/2,b.y+b.h/2);
+}
+function gambar(){
+  const sA=fadeSektor(),fA=1-sA;
+  ctx.clearRect(0,0,canvas.width,canvas.height);
+  gambarGrid();gambarLuarPeta();
+  if(fA>0.01){
+    const ukuran=DUNIA_W*kamera.skala;
+    ctx.globalAlpha=fA;
+    ctx.drawImage(bakeCanvas,toSX(-DUNIA_HALF),toSY(-DUNIA_HALF),ukuran,ukuran);
+    ctx.globalAlpha=1;
+  }
+  gambarWilayahVektor(sA);gambarBatas();gambarJalur(sA);gambarTitikSektor(sA);
+  gambarSorotFaksi();gambarSorotSektor(sA);gambarGarnisun(sA);gambarRute();
+  gambarMarkas();gambarArmada();gambarPanel();gambarInfo();
+  for(const b of tombolKanan())gambarTombol(b,false);
+  for(let i=0;i<LABEL_SPEED.length;i++)gambarTombol(tombolSpeedAt(i),i===speedIdx);
 }
 
-// Loop simulasi terpisah dari render (optimasi #1)
-setInterval(majWaktu, SIM_TICK_MS);
+// ==========================================
+// 11. LOOP
+// ==========================================
+function frame(now){
+  rafAktif=false;
+  const dt=Math.min(0.05,(now-lastFrame)/1000);lastFrame=now;
+  dtHalus=dtHalus*0.8+dt*0.2;
+  try{
+    if(!(ptr&&ptr.moved))fisika(dt);
+    majuWaktu(dtHalus);
+    if(bakeKotor&&now-lastBake>=BAKE_JEDA_MS){bakeWilayah();lastBake=now;bakeKotor=false;}
+    gambarBintang();gambar();
+  }catch(err){console.error(err);}
+  const simJalan=KECEPATAN_SPEED[speedIdx]>0;
+  if(simJalan||(!(ptr&&ptr.moved)&&sedangBergerak()))minta();
+}
 
-init();
+// ==========================================
+// 12. MULAI
+// ==========================================
+resize();
+buatBintang();
+bangunSektor();
+bangunWilayah();
+bangunFaksi();
+for(const s of sektor)if(s.owner>0){FAKSI[s.owner].milik.push(s.idx);if(s.stasiun)FAKSI[s.owner].stasiunN++;}
+bangunJalur();
+const LANGKAH_FAKSI=MENIT_PER_HARI/(FAKSI.length-1);
+FAKSI.forEach((f,i)=>{if(i>0)heapPush({t:i*LANGKAH_FAKSI,k:'F',f});});
+kamera.skala=SKALA_MIN;
+bakeWilayah();bakeKotor=false;lastBake=performance.now();
+minta();
 </script>
 </body>
 </html>
