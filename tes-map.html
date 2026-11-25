@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-<title>Peta Antar Sektor v14 (Optimized)</title>
+<title>Peta Antar Sektor v15 (Repair & Ceil)</title>
 <style>
 body,html{margin:0;padding:0;width:100%;height:100%;overflow:hidden;background:#07080d;font-family:monospace}
 #bintang{position:fixed;left:0;top:0;z-index:0;pointer-events:none}
@@ -17,7 +17,7 @@ body,html{margin:0;padding:0;width:100%;height:100%;overflow:hidden;background:#
 // ==========================================
 // 1. KONFIGURASI
 // ==========================================
-const VERSI='v14.1';
+const VERSI='v15';
 const canvas=document.getElementById('gameCanvas'),ctx=canvas.getContext('2d');
 const bgCanvas=document.getElementById('bintang'),bgCtx=bgCanvas.getContext('2d');
 const bakeCanvas=document.createElement('canvas'),bakeCtx=bakeCanvas.getContext('2d');
@@ -59,7 +59,6 @@ let dipilih=-1,dipilihFaksi=-1,ptr=null;
 let bintang=[],sektor=[],simpul=[],tepiList=[],jalurList=[],seedAt=[],FAKSI=[];
 let log=[];
 
-// Array reusable untuk render (mengurangi GC)
 const arrBiasa=[],arrSorot=[],arrSama=[],arrBeda=[];
 
 // ==========================================
@@ -422,7 +421,7 @@ function setOwner(s,id){
   }
   s.owner=id;
   if(id>0){FAKSI[id].milik.push(s.idx);if(s.stasiun)FAKSI[id].stasiunN++;}
-  bakeKotor=true; // HANYA BAKE JIKA KEPEMILIKAN BERUBAH
+  bakeKotor=true; 
 }
 
 function harianFaksi(f,t){
@@ -432,6 +431,19 @@ function harianFaksi(f,t){
   for(const i of f.milik)R=Math.max(R,Math.hypot(sektor[i].x-m.x,sektor[i].y-m.y));
   f.radius=R;
   f.poin=Math.max(0,f.poin-PEMELIHARAAN*nilaiTotal(f));
+  
+  // --- MEKANIK REPAIR KAPAL ---
+  const healRate = 0.05 + 0.1 * f.sifat.ekonomi; 
+  for(const i of f.milik) {
+      const s = sektor[i];
+      for(let k=0; k<4; k++) {
+          if(s.g[k] > 0 && s.g[k] % 1 !== 0) {
+              // Sembuhkan menuju angka bulat berikutnya (kapal utuh)
+              s.g[k] = Math.min(Math.ceil(s.g[k]), s.g[k] + healRate);
+          }
+      }
+  }
+
   placeRumah(f);
   const slot=1+f.stasiunN;
   while(f.sibuk<slot){
@@ -439,10 +451,8 @@ function harianFaksi(f,t){
     f.poin-=KELAS[k].poin;f.sibuk++;
     heapPush({t:t+KELAS[k].hari*MENIT_PER_HARI*(1.2-0.4*f.sifat.ekonomi),k:'B',f,d:k});
   }
-  // OPTIMASI: Kurangi iterasi maksimal dari 20 menjadi 2/3 per hari
   for(let i=0;i<2;i++)if(!aturPindah(f,t))break;
   for(let i=0;i<3;i++)if(!pilihSasaran(f,t))break;
-  // bakeKotor=true; <- DIHAPUS DARI SINI, DIPINDAH KE setOwner
 }
 
 function saatKeluar(m,t){
@@ -860,13 +870,13 @@ function gambarRute(){
   ctx.setLineDash([]);
 }
 function gambarGarnisun(sA){
-  // OPTIMASI: Jangan render teks jika zoom terlalu kecil
   if(sA<0.5 || kamera.skala < 1.2)return; 
   const v=batasLayar();
   ctx.globalAlpha=sA;ctx.font='9px monospace';ctx.textAlign='center';ctx.textBaseline='middle';ctx.fillStyle='#ffffff';
   for(const s of sektor){
     if(s.owner===0||!bbDalam(s.bb,v))continue;
-    const n=Math.floor(jumlahKapal(s.g));
+    // GUNAKAN MATH.CEIL AGAR 0.5 TETAP TERBACA SEBAGAI 1 KAPAL
+    const n = Math.ceil(jumlahKapal(s.g) - 0.001); 
     if(n>0)ctx.fillText(String(n),toSX(s.x),toSY(s.y));
   }
   ctx.globalAlpha=1;
@@ -893,7 +903,7 @@ function gambarPanel(){
   ctx.fillText('PETA ANTAR SEKTOR '+VERSI,16,14);
   ctx.fillText(`Hari ${hari}  ${jam}:${menit}   ${LABEL_SPEED[speedIdx]}`,16,34);
   ctx.fillText(`Faksi hidup: ${hidup}   Netral: ${netral}`,16,52);
-  ctx.fillText(`Kapal total: ${Math.floor(kapal)}   Terbanyak: ${terbanyak.nama} ${Math.floor(terbanyak.n)}`,16,68);
+  ctx.fillText(`Kapal total: ${Math.ceil(kapal)}   Terbanyak: ${terbanyak.nama} ${Math.ceil(terbanyak.n)}`,16,68);
   ctx.fillText(`Zoom: ${kamera.skala.toFixed(2)}   Galat: ${galat}`,16,84);
   if(galatPesan){ctx.font='11px monospace';ctx.fillStyle='#f87171';ctx.fillText(galatPesan.slice(0,48),16,100);}
 }
@@ -905,7 +915,7 @@ function gambarInfo(){
     baris=[
       `Markas ${sektor[f.markas].id}   Sektor ${f.milik.length}   Intel ${f.intel.size}`,
       `Poin ${f.poin.toFixed(1)}   Kekuatan ${poinArr(k).toFixed(0)}   Galangan ${f.sibuk}/${1+f.stasiunN}`,
-      `Kapal F${k[0].toFixed(0)} K${k[1].toFixed(0)} KP${k[2].toFixed(0)} R${k[3].toFixed(0)}`,
+      `Kapal F${Math.ceil(k[0])} K${Math.ceil(k[1])} KP${Math.ceil(k[2])} R${Math.ceil(k[3])}`,
       `Serang ${f.misi.filter(m=>m.jenis==='serang').length}   Pindah ${f.misi.filter(m=>m.jenis==='pindah').length}   ${f.puncak?'puncak':''}`,
       `Agresi ${f.sifat.agresi.toFixed(2)} Hati ${f.sifat.hati.toFixed(2)} Ekspansi ${f.sifat.ekspansi.toFixed(2)}`,
       `Perluasan ${f.sifat.perluasan.toFixed(2)} Logistik ${f.sifat.logistik.toFixed(2)} Ekonomi ${f.sifat.ekonomi.toFixed(2)} Tahan ${f.sifat.ketahanan.toFixed(2)}`
@@ -913,10 +923,11 @@ function gambarInfo(){
   }else if(dipilih>=0){
     const s=sektor[dipilih],f=FAKSI[s.owner],g=s.g;
     judul=`${s.id}  (${f.nama})`;
+    const totalUnit = Math.ceil(jumlahKapal(g) - 0.001);
     baris=[
       `Medan ${s.medan.toFixed(2)}   Stasiun ${s.stasiun?'ada':'tidak'}   Luas ${s.luas.toFixed(0)} km²`,
-      `Pertahanan ${pertahanan(s).toFixed(1)}`,
-      `Garnisun F${g[0].toFixed(0)} K${g[1].toFixed(0)} KP${g[2].toFixed(0)} R${g[3].toFixed(0)}`
+      `Pertahanan ${pertahanan(s).toFixed(1)}   Kekuatan: ${poinArr(g).toFixed(1)} Poin`,
+      `Garnisun: ${totalUnit} Unit (F${Math.ceil(g[0])} K${Math.ceil(g[1])} KP${Math.ceil(g[2])} R${Math.ceil(g[3])})`
     ];
   }else return;
   const pw=340,ph=26+baris.length*16+8,px=8,py=canvas.height-40-12-ph;
