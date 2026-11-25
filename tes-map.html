@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-<title>Peta Antar Sektor v15 (Repair & Ceil)</title>
+<title>Peta Antar Sektor v16 (Total War)</title>
 <style>
 body,html{margin:0;padding:0;width:100%;height:100%;overflow:hidden;background:#07080d;font-family:monospace}
 #bintang{position:fixed;left:0;top:0;z-index:0;pointer-events:none}
@@ -17,7 +17,7 @@ body,html{margin:0;padding:0;width:100%;height:100%;overflow:hidden;background:#
 // ==========================================
 // 1. KONFIGURASI
 // ==========================================
-const VERSI='v15';
+const VERSI='v16';
 const canvas=document.getElementById('gameCanvas'),ctx=canvas.getContext('2d');
 const bgCanvas=document.getElementById('bintang'),bgCtx=bgCanvas.getContext('2d');
 const bakeCanvas=document.createElement('canvas'),bakeCtx=bakeCanvas.getContext('2d');
@@ -26,11 +26,11 @@ const SEED=979,DUNIA_HALF=2500,DUNIA_W=5000,GRID_N=78,CELL_KM=DUNIA_W/GRID_N;
 const JITTER_SEL=0.4,JITTER_KM=6,JITTER_SKALA=14,WINDOW_SEL=3;
 const FAKSI_RASIO=0.10,SPAWN_RADIUS_KM=2100,SPAWN_JARAK_MIN_KM=120;
 const POIN_AWAL=2,MARKAS_AWAL_FREGAT=4;
-const CADANGAN=0.30;            
+const CADANGAN=0.10;            // TURUN DARI 30% JADI 10%
 const BONUS_BERTAHAN=1.2;       
-const MARGIN_SERANG=1.2;        
+const MARGIN_SERANG=1.05;       // TURUN DARI 1.2 JADI 1.05 (LEBIH BERANI)
 const PEMELIHARAAN=0.01;        
-const LOGISTIK_MIN=400,LOGISTIK_RANGE=1600;
+const LOGISTIK_MIN=400,LOGISTIK_RANGE=4000; // JANGKAUAN LOGISTIK DIPERLUAS
 const MENIT_PER_HARI=1440,KECEPATAN_KM_MENIT=0.9;
 const PERSIAPAN_MIN=30,PERSIAPAN_RENTANG=30;
 const KECEPATAN_SPEED=[0,10,40,160,2880],LABEL_SPEED=['JEDA','1x','4x','16x','MAX'];
@@ -232,8 +232,16 @@ function bangunJalur(){
 }
 
 // ==========================================
-// 6. FAKSI
+// 6. FAKSI & ARKETIPE (SPESIALISASI)
 // ==========================================
+const ARKETIPE = [
+  {nama:'Warlord',   agresi:0.9, hati:0.5, ekspansi:0.3, perluasan:0.6, logistik:0.6, ekonomi:0.4, ketahanan:0.5},
+  {nama:'Ekspansionis',agresi:0.3, hati:0.5, ekspansi:0.9, perluasan:0.9, logistik:0.5, ekonomi:0.6, ketahanan:0.4},
+  {nama:'Siput Baja',  agresi:0.2, hati:0.5, ekspansi:0.2, perluasan:0.3, logistik:0.3, ekonomi:0.6, ketahanan:0.9},
+  {nama:'Sindikat',    agresi:0.4, hati:0.7, ekspansi:0.5, perluasan:0.5, logistik:0.4, ekonomi:0.9, ketahanan:0.5},
+  {nama:'Laksamana',   agresi:0.6, hati:0.5, ekspansi:0.6, perluasan:0.7, logistik:0.9, ekonomi:0.5, ketahanan:0.5}
+];
+
 function bangunFaksi(){
   const N=Math.round(sektor.length*FAKSI_RASIO),rnd=mulberry32(SEED+3),titik=[];
   let minD=SPAWN_JARAK_MIN_KM,pc=0;
@@ -246,11 +254,24 @@ function bangunFaksi(){
   }
   FAKSI=[{id:0,nama:'Netral',rgb:[120,130,150],hidup:true,misi:[],milik:[],rumah:[0,0,0,0],intel:new Map()}];
   titik.forEach((idx,k)=>{
-    const sifat={agresi:rnd(),hati:rnd(),ekspansi:rnd(),perluasan:rnd(),logistik:rnd(),ekonomi:rnd(),ketahanan:rnd()};
+    // Memilih Arketipe Dominan
+    const arch = ARKETIPE[Math.floor(rnd() * ARKETIPE.length)];
+    // Menambahkan sedikit variasi acak pada arketipe
+    const sifat = {
+      tipe: arch.nama,
+      agresi: clamp(arch.agresi + (rnd()-0.5)*0.1, 0.1, 1.0),
+      hati: clamp(arch.hati + (rnd()-0.5)*0.1, 0.1, 1.0),
+      ekspansi: clamp(arch.ekspansi + (rnd()-0.5)*0.1, 0.1, 1.0),
+      perluasan: clamp(arch.perluasan + (rnd()-0.5)*0.1, 0.1, 1.0),
+      logistik: clamp(arch.logistik + (rnd()-0.5)*0.1, 0.1, 1.0),
+      ekonomi: clamp(arch.ekonomi + (rnd()-0.5)*0.1, 0.1, 1.0),
+      ketahanan: clamp(arch.ketahanan + (rnd()-0.5)*0.1, 0.1, 1.0)
+    };
+    
     const f={
-      id:k+1,nama:`Faksi ${k+1}`,rgb:hslToRgb((k*137.508)%360,0.65,0.6),markas:idx,hidup:true,sifat,
-      rumah:kosong(),poin:POIN_AWAL,sibuk:0,misi:[],intel:new Map(),
-      puncak:false,radius:40,milik:[],stasiunN:0
+      id:k+1, nama:`Faksi ${k+1}`, rgb:hslToRgb((k*137.508)%360,0.65,0.6), markas:idx, hidup:true, sifat,
+      rumah:kosong(), poin:POIN_AWAL, sibuk:0, misi:[], intel:new Map(),
+      puncak:false, radius:40, milik:[], stasiunN:0
     };
     FAKSI.push(f);
     const s=sektor[idx];
@@ -432,13 +453,12 @@ function harianFaksi(f,t){
   f.radius=R;
   f.poin=Math.max(0,f.poin-PEMELIHARAAN*nilaiTotal(f));
   
-  // --- MEKANIK REPAIR KAPAL ---
+  // MEKANIK REPAIR KAPAL
   const healRate = 0.05 + 0.1 * f.sifat.ekonomi; 
   for(const i of f.milik) {
       const s = sektor[i];
       for(let k=0; k<4; k++) {
           if(s.g[k] > 0 && s.g[k] % 1 !== 0) {
-              // Sembuhkan menuju angka bulat berikutnya (kapal utuh)
               s.g[k] = Math.min(Math.ceil(s.g[k]), s.g[k] + healRate);
           }
       }
@@ -451,8 +471,9 @@ function harianFaksi(f,t){
     f.poin-=KELAS[k].poin;f.sibuk++;
     heapPush({t:t+KELAS[k].hari*MENIT_PER_HARI*(1.2-0.4*f.sifat.ekonomi),k:'B',f,d:k});
   }
-  for(let i=0;i<2;i++)if(!aturPindah(f,t))break;
-  for(let i=0;i<3;i++)if(!pilihSasaran(f,t))break;
+  // PERANG TOTAL: Kuota serangan & pindah diperbanyak
+  for(let i=0;i<5;i++)if(!aturPindah(f,t))break;
+  for(let i=0;i<10;i++)if(!pilihSasaran(f,t))break;
 }
 
 function saatKeluar(m,t){
@@ -875,7 +896,6 @@ function gambarGarnisun(sA){
   ctx.globalAlpha=sA;ctx.font='9px monospace';ctx.textAlign='center';ctx.textBaseline='middle';ctx.fillStyle='#ffffff';
   for(const s of sektor){
     if(s.owner===0||!bbDalam(s.bb,v))continue;
-    // GUNAKAN MATH.CEIL AGAR 0.5 TETAP TERBACA SEBAGAI 1 KAPAL
     const n = Math.ceil(jumlahKapal(s.g) - 0.001); 
     if(n>0)ctx.fillText(String(n),toSX(s.x),toSY(s.y));
   }
@@ -911,7 +931,8 @@ function gambarInfo(){
   let baris=null,judul='',warna=[253,224,71];
   if(dipilihFaksi>0&&FAKSI[dipilihFaksi].hidup){
     const f=FAKSI[dipilihFaksi],k=kelasTotal(f);
-    judul=f.nama;warna=f.rgb;
+    judul = `${f.nama} [${f.sifat.tipe}]`; // MENAMPILKAN ARKETIPE
+    warna=f.rgb;
     baris=[
       `Markas ${sektor[f.markas].id}   Sektor ${f.milik.length}   Intel ${f.intel.size}`,
       `Poin ${f.poin.toFixed(1)}   Kekuatan ${poinArr(k).toFixed(0)}   Galangan ${f.sibuk}/${1+f.stasiunN}`,
@@ -930,7 +951,7 @@ function gambarInfo(){
       `Garnisun: ${totalUnit} Unit (F${Math.ceil(g[0])} K${Math.ceil(g[1])} KP${Math.ceil(g[2])} R${Math.ceil(g[3])})`
     ];
   }else return;
-  const pw=340,ph=26+baris.length*16+8,px=8,py=canvas.height-40-12-ph;
+  const pw=360,ph=26+baris.length*16+8,px=8,py=canvas.height-40-12-ph;
   kotakTeks(px,py,pw,ph);
   ctx.fillStyle=rgbaStr(warna,1);ctx.font='13px monospace';ctx.textAlign='left';ctx.textBaseline='top';
   ctx.fillText(judul,px+10,py+8);
