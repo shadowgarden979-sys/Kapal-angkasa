@@ -18,6 +18,7 @@ body,html{margin:0;padding:0;width:100%;height:100%;overflow:hidden;background:#
 // ==========================================
 // 1. KONFIGURASI
 // ==========================================
+const VERSI = 'v5';
 const canvas = document.getElementById('gameCanvas');
 const ctx = canvas.getContext('2d');
 const bgCanvas = document.getElementById('bintang');
@@ -33,10 +34,12 @@ const JITTER_KM = 6;
 const JITTER_SKALA = 14;
 const WINDOW_SEL = 3;
 const JUMLAH_FAKSI = 4;               // faksi aktif, Netral tidak dihitung
-const TITIK_AWAL_KM = 1250;           // markas awal di (±1250, ±1250) km
-const TITIK_AWAL_JITTER = 200;        // simpangan acak titik awal (km)
-const NETRAL_TIPIS = 120;             // km: sektor yang dua markas terdekatnya hampir sama jaraknya jadi Netral
-const LLOYD_ITER = 8;                 // putaran penyesuaian markas ke pusat wilayah
+const TITIK_AWAL_MIN_KM = 800;        // jarak titik awal faksi dari pusat peta (minimum)
+const TITIK_AWAL_MAX_KM = 1500;       // jarak titik awal faksi dari pusat peta (maksimum)
+const TITIK_AWAL_SUDUT = 0.7;         // simpangan sudut titik awal (rad), membuat bentuk tidak simetris
+const NETRAL_JARAK = 1200;            // km dari titik awal faksi, di luar ini Netral
+const MARKAS_GESER = 0.3;             // markas digeser keluar dari pusat wilayah sebesar 30%, menuju sudut
+const MARKAS_BATAS = DUNIA_HALF * 0.85;   // markas tidak pernah masuk ke area sudut peta
 const SKALA_MIN = 0.2, SKALA_MAX = 12, SKALA_LANGKAH = 1.25;
 const SKALA_FADE_MULAI = 0.6, SKALA_FADE_SELESAI = 1.0;
 const REDUP_LAIN = 0.2;
@@ -47,10 +50,11 @@ const ALPHA_TEPI = 0.05;
 const NETRAL_ALPHA = 0.06;
 const TEKSTUR_ALPHA = 0.10;
 
-// [RENDER] Jalur antar sektor
-const JALUR_LENGKUNG_KM = 60;         // lengkungan maksimum jalur (km)
-const ALPHA_JALUR_DALAM = 0.10;       // jalur di dalam satu faksi
-const ALPHA_JALUR_LINTAS = 0.22;      // jalur lintas batas faksi
+// [RENDER] Jalur antar sektor (garis lurus)
+const ALPHA_JALUR_DALAM = 0.28;       // jalur di dalam satu faksi
+const ALPHA_JALUR_LINTAS = 0.50;      // jalur lintas batas faksi
+const JALUR_MULAI_ZOOM = 0.25;        // jalur mulai terlihat dari zoom ini
+const JALUR_PENUH_ZOOM = 0.6;         // jalur penuh terlihat dari zoom ini
 
 // [LOGIKA] Kamera: margin, pegas, dan momentum
 const MARGIN_PX = 110;
@@ -201,29 +205,27 @@ function bangunSektor() {
     sektor.forEach((s, i) => { s.id = 'S-' + String(i + 1).padStart(4, '0'); });
 }
 
-// [LOGIKA] Tiap sektor masuk faksi markas terdekat.
-// Dengan netral = true, sektor yang dua markas terdekatnya hampir sama jaraknya jadi Netral.
-function tugaskanFaksi(markas, pakaiNetral) {
+// [LOGIKA] Tiap sektor masuk faksi dari titik awal terdekat, atau Netral jika terlalu jauh
+function tugaskanFaksi(titikAwal) {
     for (const s of sektor) {
-        let b1 = Infinity, b1k = -1, b2 = Infinity;
-        for (let k = 0; k < markas.length; k++) {
-            const m = sektor[markas[k]];
-            const d = Math.hypot(s.x - m.x, s.y - m.y);
-            if (d < b1) { b2 = b1; b1 = d; b1k = k; }
-            else if (d < b2) { b2 = d; }
-        }
-        s.faksi = (pakaiNetral && b2 - b1 < NETRAL_TIPIS) ? 0 : b1k + 1;
+        let best = -1, bd = Infinity;
+        titikAwal.forEach((m, k) => {
+            const d = Math.hypot(s.x - sektor[m].x, s.y - sektor[m].y);
+            if (d < bd) { bd = d; best = k; }
+        });
+        s.faksi = bd > NETRAL_JARAK ? 0 : best + 1;
     }
 }
 
-// [DATA] Markas awal di empat kuadran, lalu dipindah ke pusat wilayahnya (Lloyd).
-// Tidak ada batas radius dan tidak ada markas di pojok peta.
+// [DATA] Titik awal faksi tersebar di sekitar peta dengan jarak dan sudut acak (deterministik).
+// Markas dipilih dari pusat wilayah, lalu digeser sedikit keluar menuju sudut peta,
+// tapi dibatasi agar tidak pernah masuk ke area sudut.
 function pilihMarkasDanFaksi() {
     const rnd = mulberry32(SEED + 1);
-    const arah = [[-1, -1], [1, -1], [1, 1], [-1, 1]];
-    let markas = arah.map(([sx, sy]) => {
-        const tx = sx * TITIK_AWAL_KM + (rnd() - 0.5) * 2 * TITIK_AWAL_JITTER;
-        const ty = sy * TITIK_AWAL_KM + (rnd() - 0.5) * 2 * TITIK_AWAL_JITTER;
+    const titikAwal = [0, 1, 2, 3].map(k => {
+        const sudut = k * Math.PI / 2 + Math.PI / 4 + (rnd() - 0.5) * 2 * TITIK_AWAL_SUDUT;
+        const jarak = TITIK_AWAL_MIN_KM + rnd() * (TITIK_AWAL_MAX_KM - TITIK_AWAL_MIN_KM);
+        const tx = Math.cos(sudut) * jarak, ty = Math.sin(sudut) * jarak;
         let best = 0, bd = Infinity;
         for (let i = 0; i < sektor.length; i++) {
             const d = Math.hypot(sektor[i].x - tx, sektor[i].y - ty);
@@ -232,32 +234,29 @@ function pilihMarkasDanFaksi() {
         return best;
     });
 
-    for (let it = 0; it < LLOYD_ITER; it++) {
-        tugaskanFaksi(markas, false);
-        const berikut = markas.slice();
-        for (let k = 0; k < JUMLAH_FAKSI; k++) {
-            let sx = 0, sy = 0, n = 0;
-            for (const s of sektor) if (s.faksi === k + 1) { sx += s.x; sy += s.y; n++; }
-            if (n === 0) continue;
-            sx /= n; sy /= n;
-            let best = -1, bd = Infinity;
-            for (let i = 0; i < sektor.length; i++) {
-                if (sektor[i].faksi !== k + 1) continue;
-                const d = Math.hypot(sektor[i].x - sx, sektor[i].y - sy);
-                if (d < bd) { bd = d; best = i; }
-            }
-            if (best >= 0) berikut[k] = best;
+    tugaskanFaksi(titikAwal);
+
+    sektor.forEach(s => { s.markas = false; });
+    for (let f = 1; f < FAKSI.length; f++) {
+        let sx = 0, sy = 0, n = 0;
+        for (const s of sektor) if (s.faksi === f) { sx += s.x; sy += s.y; n++; }
+        if (n === 0) continue;
+        sx /= n; sy /= n;
+
+        // Geser pusat keluar dari origin, lalu batasi agar tetap jauh dari sudut peta
+        const tx = clamp(sx * (1 + MARKAS_GESER), -MARKAS_BATAS, MARKAS_BATAS);
+        const ty = clamp(sy * (1 + MARKAS_GESER), -MARKAS_BATAS, MARKAS_BATAS);
+
+        let best = -1, bd = Infinity;
+        for (let i = 0; i < sektor.length; i++) {
+            if (sektor[i].faksi !== f) continue;
+            const d = Math.hypot(sektor[i].x - tx, sektor[i].y - ty);
+            if (d < bd) { bd = d; best = i; }
         }
-        markas = berikut;
+        FAKSI[f].markas = best;
+        sektor[best].markas = true;
     }
 
-    tugaskanFaksi(markas, true);
-    sektor.forEach(s => { s.markas = false; });
-    markas.forEach((si, k) => {
-        FAKSI[k + 1].markas = si;
-        sektor[si].markas = true;
-        sektor[si].faksi = k + 1;      // markas selalu milik faksinya
-    });
     sektor.forEach(s => {
         s.dijelajahi = s.markas || s.id.endsWith('7');  // placeholder
         s.stasiun = s.markas || s.id.endsWith('3');     // placeholder
@@ -377,28 +376,21 @@ function bangunWilayah() {
     }
 }
 
-// [DATA] Jalur: setiap pasangan sektor yang berbagi sisi wilayah dihubungkan.
-// Tidak ada seleksi. Lengkungan dihitung sekali dari derau dan disimpan.
+// [DATA] Jalur: setiap pasangan sektor yang berbagi sisi wilayah dihubungkan dengan garis lurus.
 function bangunJalur() {
     jalurList = [];
     for (const e of tepiList) {
         if (e.s.length !== 2) continue;
         const A = sektor[e.s[0]], B = sektor[e.s[1]];
-        const mx = (A.x + B.x) / 2, my = (A.y + B.y) / 2;
-        const dx = B.x - A.x, dy = B.y - A.y;
-        const len = Math.hypot(dx, dy) || 1;
-        const off = (vnoise(mx / JITTER_SKALA + 50, my / JITTER_SKALA + 50) - 0.5) * 2 * JALUR_LENGKUNG_KM;
-        const cx = mx - (dy / len) * off;
-        const cy = my + (dx / len) * off;
         jalurList.push({
-            a: e.s[0], b: e.s[1], cx, cy,
-            minX: Math.min(A.x, B.x, cx), maxX: Math.max(A.x, B.x, cx),
-            minY: Math.min(A.y, B.y, cy), maxY: Math.max(A.y, B.y, cy)
+            a: e.s[0], b: e.s[1],
+            minX: Math.min(A.x, B.x), maxX: Math.max(A.x, B.x),
+            minY: Math.min(A.y, B.y), maxY: Math.max(A.y, B.y)
         });
     }
 }
 
-// [LOGIKA] Perubahan faksi hanya menilai ulang sisi sektor ini
+// [LOGIKA] Perubahan faksi hanya menilai ulang sisi sektor ini. Markas tidak bisa diambil.
 function setFaksiSektor(i, f) {
     if (i < 0 || i >= sektor.length || f < 0 || f >= FAKSI.length) return false;
     if (sektor[i].markas) return false;
@@ -790,20 +782,21 @@ function gambarWilayah(sA, fA) {
     strokeBatch(sorot);
 }
 
-// [RENDER] Jalur antar sektor: hanya di layer sektor, hanya yang terlihat.
+// [RENDER] Jalur antar sektor (garis lurus): terlihat dari zoom menengah, hanya yang ada di layar.
 // Dikelompokkan per warna, supaya jumlah panggilan stroke kecil.
 function strokeJalur(list) {
     ctx.beginPath();
     for (const j of list) {
         const A = sektor[j.a], B = sektor[j.b];
         ctx.moveTo(toSX(A.x), toSY(A.y));
-        ctx.quadraticCurveTo(toSX(j.cx), toSY(j.cy), toSX(B.x), toSY(B.y));
+        ctx.lineTo(toSX(B.x), toSY(B.y));
     }
     ctx.stroke();
 }
 
 function gambarJalur(sA) {
-    if (sA < 0.01 || jalurList.length === 0) return;
+    const sJalur = Math.max(sA, clamp((kamera.skala - JALUR_MULAI_ZOOM) / (JALUR_PENUH_ZOOM - JALUR_MULAI_ZOOM), 0, 1));
+    if (sJalur < 0.01 || jalurList.length === 0) return;
     const v = batasLayar();
     const grup = new Map();
     const sorot = [];
@@ -832,13 +825,13 @@ function gambarJalur(sA) {
             alpha = ALPHA_JALUR_LINTAS;
             lw = 0.9;
         }
-        ctx.strokeStyle = rgbaStr(rgb, (alpha * sA).toFixed(3));
+        ctx.strokeStyle = rgbaStr(rgb, (alpha * sJalur).toFixed(3));
         ctx.lineWidth = lw;
         strokeJalur(list);
     }
 
     if (sorot.length) {
-        ctx.strokeStyle = `rgba(253,224,71,${(0.6 * sA).toFixed(3)})`;
+        ctx.strokeStyle = `rgba(253,224,71,${(0.6 * sJalur).toFixed(3)})`;
         ctx.lineWidth = 1.2;
         strokeJalur(sorot);
     }
@@ -922,7 +915,7 @@ function gambarPanel(sA) {
     ctx.font = '13px monospace';
     ctx.textAlign = 'left';
     ctx.textBaseline = 'top';
-    ctx.fillText('PETA ANTAR SEKTOR', 16, 14);
+    ctx.fillText('PETA ANTAR SEKTOR ' + VERSI, 16, 14);
     ctx.fillText(`Sektor: ${sektor.length}   Dijelajahi: ${dijelajahi}`, 16, 34);
     ctx.fillText(`Stasiun aktif: ${stasiun}`, 16, 52);
     ctx.fillText(`Zoom: ${kamera.skala.toFixed(2)}`, 16, 68);
