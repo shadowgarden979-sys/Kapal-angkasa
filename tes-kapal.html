@@ -3,1185 +3,934 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-<title>Tes Kapal - Final</title>
+<title>Peta Antar Sektor</title>
 <style>
 body,html{margin:0;padding:0;width:100%;height:100%;overflow:hidden;background:#07080d;font-family:monospace}
-canvas{display:block;touch-action:none}
+#bintang{position:fixed;left:0;top:0;z-index:0;pointer-events:none}
+#gameCanvas{position:fixed;left:0;top:0;z-index:1;touch-action:none}
 </style>
 </head>
 <body>
+<canvas id="bintang"></canvas>
 <canvas id="gameCanvas"></canvas>
 
 <script>
 // ==========================================
-// 1. ASET DAN KONFIGURASI
+// 1. KONFIGURASI
 // ==========================================
 const canvas = document.getElementById('gameCanvas');
 const ctx = canvas.getContext('2d');
+const bgCanvas = document.getElementById('bintang');
+const bgCtx = bgCanvas.getContext('2d');
 
-function resize() {
-    canvas.width = window.innerWidth;
-    canvas.height = window.innerHeight;
-    ctx.imageSmoothingEnabled = false;
-}
-window.addEventListener('resize', resize);
-resize();
+const SEED = 979;
+const DUNIA_HALF = 2500;              // peta 5.000 × 5.000 km
+const DUNIA_W = DUNIA_HALF * 2;
+const GRID_N = 78;                    // 78 × 78 sel awal → ±6.084 sektor
+const CELL_KM = DUNIA_W / GRID_N;     // ±64 km per sisi (rata-rata)
+const JITTER_SEL = 0.4;
+const JITTER_KM = 6;
+const JITTER_SKALA = 14;
+const WINDOW_SEL = 3;
+const JUMLAH_FAKSI = 4;               // faksi aktif, Netral tidak dihitung
+const NETRAL_JARAK = 1200;            // km dari markas, di luar ini Netral
+const LLOYD_ITER = 8;                 // putaran penyesuaian markas ke pusat wilayah
+const SKALA_MIN = 0.2, SKALA_MAX = 12, SKALA_LANGKAH = 1.25;
+const SKALA_FADE_MULAI = 0.6, SKALA_FADE_SELESAI = 1.0;
+const REDUP_LAIN = 0.2;
 
-// Nama file HARUS sama persis dengan yang ada di repo GitHub
-const ASET = {
-    rangka: 'kerangkakruiser-384x528px.png',
-    inti: 'intikruiser-384x528px.png',
-    utama: 'pendorong-32x48px.png',
-    sel: 'sel-16x16px.png',
-    efek: 'efek-pendorong.png'
-};
-const gbr = {};
-for (const k in ASET) { gbr[k] = new Image(); gbr[k].src = ASET[k]; }
+// [RENDER] Warna wilayah: gradien dari markas ke tepi
+const ALPHA_PUSAT = 0.26;             // opasitas di markas
+const ALPHA_TEPI = 0.05;              // opasitas di tepi wilayah
+const NETRAL_ALPHA = 0.06;            // Netral dibuat lebih samar
+const TEKSTUR_ALPHA = 0.10;           // butir halus di atas wilayah (0 = mati)
 
-const C = 16;
-const KW = 384, KH = 528, COLS = KW / C, ROWS = KH / C;
-const PX = KW / 2, PY = KH / 2;
+// [LOGIKA] Kamera: margin, pegas, dan momentum
+const MARGIN_PX = 110;
+const RUBBER_FAKTOR = 0.35;
+const PEGAS_K = 50;
+const PEGAS_D = 14;
+const GESEK = 4;
+const FLING_MAX_PX = 1500;
 
-// Posisi inti dibaca dari PNG inti (diisi saat mulai)
-let INTI = { i: 0, j: 0, w: 2, h: 2, ada: false };
+const BINTANG_N = 180;
+const BINTANG_HZ = 10;
+const GRID_ALPHA = 0.05;
+const LUAR_ALPHA = 0.45;
 
-// Offset pusat inti dari pusat kerangka (px dunia). Titik acuan kapal = inti.
-let OFS_INTI = { x: 0, y: 0 };
-
-const DEF = { utama: { w: 2, h: 3 }, sel: { w: 1, h: 1 } };
-const TOMBOL = [['utama', 'Utama'], ['sel', 'Sel'], ['hapus', 'Hapus'], ['ok', 'OK']];
-const DIR4 = [[1, 0], [-1, 0], [0, 1], [0, -1]];
-
-const BATAS_I = [-8, 31], BATAS_J = [-4, 35];
-
-const SKALA_BANGUN = 0.6;
-const ZOOM_MIN = 0.2, ZOOM_MAX = 3, ZOOM_LANGKAH = 1.25;
-
-// Fisika (1 px = 1 m, 1 sel = 1 ton)
-const KG_PER_SEL = 1000;
-const F_THR = 6.4e6;
-const ACEL_MAKS = 2;
-const SPOOL = 2;
-const REM = 2;
-
-const A_LATERAL = 2;
-
-// Data per jenis. batasSel = batas maksimum area bangun (sel)
-const JENIS = {
-    fregat:    { sel: 60,    lurus: 60, omega: 0.10, maksPendorong: 3, batasSel: 20,  aktif: false },
-    destroyer: { sel: 120,   lurus: 50, omega: 0.07, maksPendorong: 4, batasSel: 25,  aktif: false },
-    kruiser:   { sel: 232,   lurus: 40, omega: 0.05, maksPendorong: 5, batasSel: 40,  aktif: true  },
-    perang:    { sel: 600,   lurus: 30, omega: 0.03, maksPendorong: 6, batasSel: 70,  aktif: false },
-    raksasa:   { sel: 12965, lurus: 15, omega: 0.01, maksPendorong: 12, batasSel: 150, aktif: false }
-};
-const JENIS_AKTIF = JENIS.kruiser;
-
-const LEBAR_KOLOM = Math.round(JENIS_AKTIF.batasSel * 0.5);
-
-const FAKTOR_SUDUT = [
-    { maks: 0.30, f: 0.9 },
-    { maks: 0.79, f: 0.6 },
-    { maks: Infinity, f: 0.45 }
+const FAKSI = [
+    { nama: 'Netral',           rgb: [120, 130, 150], markas: -1 },
+    { nama: 'Aliansi Biru',     rgb: [60, 140, 255],  markas: -1 },
+    { nama: 'Kekaisaran Merah', rgb: [230, 70, 70],   markas: -1 },
+    { nama: 'Serikat Hijau',    rgb: [70, 200, 120],  markas: -1 },
+    { nama: 'Faksi Ungu',       rgb: [168, 85, 247],  markas: -1 }
 ];
 
-const PENDORONG_LEBAR = 32;
-
-const LEBAR_PITA = 640;
-const PITA_ALPHA = 0.22;
-const KOREKSI_TEPI = 0.5;
-const AMBANG_BELOK = 0.3;
-
-const LOOK_JARAK = 300;
-const TOL_SIMPLIF = 16;
-const SEG_WINDOW = 8;
-const JALUR_STEP = 6;
-const BUSUR_LANGKAH = 0.1;
-
-const RADIUS_SENTUH_KAPAL = 80;
-const UJUNG_SENTUH = 90;
-
-const BAYANGAN_ALPHA = 0.35;
-const BAYANGAN_JARAK_DEKAT = 16;
-const BAYANGAN_JARAK_JAUH = 160;
-
-const SFX_SRC = 'suara-pendorong.mp3';
-const SFX_VOLUME_DASAR = 0.4;
-const SFX_FADE_DETIK = 0.4;
-const FAKTOR_JARAK = 2;
-const SFX_VOLUME_SAAT_BELOK = 0.85;
-
-// ==========================================
-// 2. STATUS
-// ==========================================
-const kamera = { x: 0, y: 0, skala: SKALA_BANGUN };
-let mode = 'bangun';
-let hapusAktif = false;
-let seret = null;
-let pilihKapal = false;
-let draftPts = [];
+let rafAktif = false;
+let lastFrame = performance.now();
+const kamera = { x: 0, y: 0, skala: SKALA_MIN };
+const vel = { x: 0, y: 0 };
+let dipilih = -1;
+let dipilihFaksi = -1;
 let ptr = null;
-let cells = new Map();
-let rangkaSet = new Set();
-let thrs = [];
-let terakhir = performance.now();
-let errorTerakhir = null;
-
-// kapal.x, kapal.y = posisi INTI (titik acuan kapal)
-let kapal = {
-    x: 0, y: 0, th: 0, v: 0, nyala: 0,
-    target: null,
-    rute: [],
-    seg: 0,
-    hidup: false, status: '-', tersambung: 0, gas: false,
-    koreksi: 0,
-    api: 0
-};
-
-const sfxA = new Audio(SFX_SRC);
-const sfxB = new Audio(SFX_SRC);
-let sfxAktif = sfxA;
-let sfxMulai = false;
-[sfxA, sfxB].forEach(s => { s.preload = 'auto'; s.volume = 0; });
+let bintang = [];
+let sektor = [];
+let simpul = [];
+let tepiList = [];
+let seedAt = [];
+let radiusFaksi = [];                 // jari-jari wilayah tiap faksi dari markasnya (km)
+let polaTekstur = null;
 
 // ==========================================
-// 3. PENGAMAN ERROR
+// 2. UTILITAS
 // ==========================================
-let errorLog = '';
-function catatError(lokasi, err) {
-    const pesan = err && err.message ? err.message : String(err);
-    errorTerakhir = `[${lokasi}] ${pesan}`;
-    if (errorTerakhir !== errorLog) {
-        errorLog = errorTerakhir;
-        console.error(err);
-    }
-}
-window.addEventListener('error', e => catatError('global', e.error || e.message));
-window.addEventListener('unhandledrejection', e => catatError('promise', e.reason));
-
-function aman(lokasi, fn) {
-    return e => { try { fn(e); } catch (err) { catatError(lokasi, err); } };
-}
-function coba(nama, fn) {
-    try { fn(); } catch (err) { catatError(nama, err); }
-}
-function siapGambar(img) {
-    return !!img && img.complete && img.naturalWidth > 0;
-}
-
-// ==========================================
-// 4. UTILITAS
-// ==========================================
-function kunci(i, j) { return i + ',' + j; }
-function clamp(v, a, b) { return Math.max(a, Math.min(b, v)); }
-function dist(a, b) { return Math.hypot(a.x - b.x, a.y - b.y); }
-function sudutSelisih(a, b) {
-    let d = a - b;
-    while (d > Math.PI) d -= 2 * Math.PI;
-    while (d < -Math.PI) d += 2 * Math.PI;
-    return d;
-}
-function toSX(x) { return (x - kamera.x) * kamera.skala + canvas.width / 2; }
-function toSY(y) { return (y - kamera.y) * kamera.skala + canvas.height / 2; }
-function dariSX(sx) { return (sx - canvas.width / 2) / kamera.skala + kamera.x; }
-function dariSY(sy) { return (sy - canvas.height / 2) / kamera.skala + kamera.y; }
-function dalam(p, r) { return p.x >= r.x && p.x <= r.x + r.w && p.y >= r.y && p.y <= r.y + r.h; }
-function posisi(e) {
-    const r = canvas.getBoundingClientRect();
-    return { x: e.clientX - r.left, y: e.clientY - r.top };
-}
-// Layar -> koordinat sel grid (relatif pusat kerangka)
-function layarKeKisi(sx, sy) {
-    const wx = dariSX(sx) - kapal.x + OFS_INTI.x, wy = dariSY(sy) - kapal.y + OFS_INTI.y;
-    return { i: Math.floor((wx + PX) / C), j: Math.floor((wy + PY) / C) };
-}
-function anchorFor(id, i, j) {
-    const d = DEF[id];
-    return { i: i - Math.floor(d.w / 2), j: j - Math.floor(d.h / 2) };
-}
-function arahKe(dx, dy) { return Math.atan2(dx, -dy); }
-
-// ==========================================
-// 5. BANGUN KAPAL
-// ==========================================
-function bacaSelDariGambar(img) {
-    const c = document.createElement('canvas');
-    c.width = KW; c.height = KH;
-    const g = c.getContext('2d');
-    g.drawImage(img, 0, 0, KW, KH);
-    const d = g.getImageData(0, 0, KW, KH).data;
-    const hasil = [];
-    for (let j = 0; j < ROWS; j++) {
-        for (let i = 0; i < COLS; i++) {
-            let ada = false;
-            for (let y = 0; y < C && !ada; y++) {
-                for (let x = 0; x < C; x++) {
-                    const p = ((j * C + y) * KW + (i * C + x)) * 4;
-                    if (d[p + 3] > 0) { ada = true; break; }
-                }
-            }
-            if (ada) hasil.push([i, j]);
-        }
-    }
-    return hasil;
-}
-
-function bacaInti() {
-    const sel = bacaSelDariGambar(gbr.inti);
-    if (sel.length === 0) return { i: 0, j: 0, w: 2, h: 2, ada: false };
-    let minI = Infinity, minJ = Infinity, maxI = -Infinity, maxJ = -Infinity;
-    for (const [i, j] of sel) {
-        if (i < minI) minI = i;
-        if (j < minJ) minJ = j;
-        if (i > maxI) maxI = i;
-        if (j > maxJ) maxJ = j;
-    }
-    return { i: minI, j: minJ, w: maxI - minI + 1, h: maxJ - minJ + 1, ada: true };
-}
-
-function hitungOfsetInti() {
-    if (!INTI.ada) return { x: 0, y: 0 };
-    return {
-        x: INTI.i * C + (INTI.w * C) / 2 - PX,
-        y: INTI.j * C + (INTI.h * C) / 2 - PY
+function mulberry32(a) {
+    return function () {
+        a |= 0; a = a + 0x6D2B79F5 | 0;
+        let t = Math.imul(a ^ a >>> 15, 1 | a);
+        t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t;
+        return ((t ^ t >>> 14) >>> 0) / 4294967296;
     };
 }
 
-function initKapal() {
-    cells.clear();
-    rangkaSet.clear();
-    thrs = [];
-    for (const [i, j] of bacaSelDariGambar(gbr.rangka)) {
-        rangkaSet.add(kunci(i, j));
-        cells.set(kunci(i, j), { i, j, tipe: 'rangka', thr: null });
+function hashKisi(x, y) {
+    let h = (x * 374761393 + y * 668265263) | 0;
+    h = Math.imul(h ^ (h >>> 13), 1274126177);
+    return ((h ^ (h >>> 16)) >>> 0) / 4294967295;
+}
+
+function vnoise(x, y) {
+    const xi = Math.floor(x), yi = Math.floor(y);
+    const xf = x - xi, yf = y - yi;
+    const u = xf * xf * (3 - 2 * xf), v = yf * yf * (3 - 2 * yf);
+    const a = hashKisi(xi, yi), b = hashKisi(xi + 1, yi);
+    const c = hashKisi(xi, yi + 1), d = hashKisi(xi + 1, yi + 1);
+    return a + (b - a) * u + (c - a) * v + (a - b - c + d) * u * v;
+}
+
+// [DATA] Dipanggil sekali per simpul saat peta dibuat
+function goyang(x, y) {
+    const dx = (vnoise(x / JITTER_SKALA, y / JITTER_SKALA) - 0.5) * 2 * JITTER_KM;
+    const dy = (vnoise((x + 311) / JITTER_SKALA, (y + 977) / JITTER_SKALA) - 0.5) * 2 * JITTER_KM;
+    return [dx, dy];
+}
+
+function clamp(v, a, b) { return Math.max(a, Math.min(b, v)); }
+function wrap(v, m) { return ((v % m) + m) % m; }
+function rgbaStr(rgb, a) { return `rgba(${rgb[0]},${rgb[1]},${rgb[2]},${a})`; }
+function dalamKotak(p, k) { return p.x >= k.x && p.x <= k.x + k.w && p.y >= k.y && p.y <= k.y + k.h; }
+function posisi(e) { const r = canvas.getBoundingClientRect(); return { x: e.clientX - r.left, y: e.clientY - r.top }; }
+
+function minta() {
+    if (rafAktif) return;
+    rafAktif = true;
+    requestAnimationFrame(frame);
+}
+
+// ==========================================
+// 3. LATAR BINTANG (parallax, mengikuti kamera)
+// ==========================================
+function buatBintang() {
+    const r = mulberry32(4242);
+    bintang = [];
+    for (let i = 0; i < BINTANG_N; i++) {
+        const d = 0.15 + r() * 0.85;
+        bintang.push({
+            x: r(), y: r(),
+            d,
+            r: 0.4 + d * 1.1,
+            vx: (r() - 0.5) * 4,
+            vy: (r() - 0.5) * 4,
+            ph: r() * Math.PI * 2,
+            sp: 0.6 + r() * 1.4,
+            base: 0.35 + r() * 0.5
+        });
     }
-    INTI = bacaInti();
-    OFS_INTI = hitungOfsetInti();
-    if (INTI.ada) {
-        for (let j = INTI.j; j < INTI.j + INTI.h; j++) {
-            for (let i = INTI.i; i < INTI.i + INTI.w; i++) {
-                cells.set(kunci(i, j), { i, j, tipe: 'inti', thr: null });
+}
+
+// [RENDER] Posisi bintang = waktu (kedip/drift) + posisi kamera × kedalaman
+function gambarBintang() {
+    const w = bgCanvas.width, h = bgCanvas.height;
+    if (!w || !h) return;
+    const t = performance.now() / 1000;
+    const ox = -kamera.x * kamera.skala;
+    const oy = -kamera.y * kamera.skala;
+    bgCtx.clearRect(0, 0, w, h);
+    for (const s of bintang) {
+        const x = wrap(s.x * w + s.vx * t + ox * s.d, w);
+        const y = wrap(s.y * h + s.vy * t + oy * s.d, h);
+        const a = s.base * (0.55 + 0.45 * Math.sin(t * s.sp + s.ph));
+        bgCtx.fillStyle = `rgba(220,230,255,${a.toFixed(3)})`;
+        bgCtx.beginPath();
+        bgCtx.arc(x, y, s.r, 0, Math.PI * 2);
+        bgCtx.fill();
+    }
+}
+
+setInterval(() => {
+    if (!document.hidden && !(ptr && ptr.moved) && !sedangBergerak()) gambarBintang();
+}, 1000 / BINTANG_HZ);
+
+// ==========================================
+// 4. SEKTOR, MARKAS, DAN FAKSI
+// ==========================================
+// [DATA] Titik sektor dari grid berjitter
+function bangunSektor() {
+    const rnd = mulberry32(SEED);
+    sektor = [];
+    seedAt = new Array(GRID_N * GRID_N).fill(-1);
+    for (let gj = 0; gj < GRID_N; gj++) {
+        for (let gi = 0; gi < GRID_N; gi++) {
+            const x = -DUNIA_HALF + (gi + 0.5 + (rnd() - 0.5) * 2 * JITTER_SEL) * CELL_KM;
+            const y = -DUNIA_HALF + (gj + 0.5 + (rnd() - 0.5) * 2 * JITTER_SEL) * CELL_KM;
+            seedAt[gi + gj * GRID_N] = sektor.length;
+            sektor.push({ x, y, gi, gj, faksi: 0, markas: false, poli: [], tepi: [], bb: null, luas: 0 });
+        }
+    }
+    sektor.forEach((s, i) => { s.id = 'S-' + String(i + 1).padStart(4, '0'); });
+}
+
+// [LOGIKA] Setiap sektor masuk faksi markas terdekat, atau Netral jika terlalu jauh
+function tugaskanFaksi(markas) {
+    for (const s of sektor) {
+        let bestK = -1, bestD = Infinity;
+        markas.forEach((m, k) => {
+            const d = Math.hypot(s.x - sektor[m].x, s.y - sektor[m].y);
+            if (d < bestD) { bestD = d; bestK = k; }
+        });
+        s.faksi = bestD > NETRAL_JARAK ? 0 : bestK + 1;
+    }
+}
+
+// [DATA] Markas dipindahkan ke pusat wilayahnya (Lloyd): tiap putaran, pusat dihitung
+// dari sektor milik faksi, lalu markas dipindah ke sektor terdekat dari pusat itu.
+function pilihMarkasDanFaksi() {
+    const rnd = mulberry32(SEED + 1);
+    let markas = [Math.floor(rnd() * sektor.length)];
+    while (markas.length < JUMLAH_FAKSI) {
+        let best = -1, bestJ = -1;
+        for (let i = 0; i < sektor.length; i++) {
+            if (markas.includes(i)) continue;
+            let mj = Infinity;
+            for (const m of markas) mj = Math.min(mj, Math.hypot(sektor[i].x - sektor[m].x, sektor[i].y - sektor[m].y));
+            if (mj > bestJ) { bestJ = mj; best = i; }
+        }
+        markas.push(best);
+    }
+
+    for (let it = 0; it < LLOYD_ITER; it++) {
+        tugaskanFaksi(markas);
+        const berikut = markas.slice();
+        for (let k = 0; k < JUMLAH_FAKSI; k++) {
+            let sx = 0, sy = 0, n = 0;
+            for (const s of sektor) if (s.faksi === k + 1) { sx += s.x; sy += s.y; n++; }
+            if (n === 0) continue;
+            sx /= n; sy /= n;
+            let best = -1, bd = Infinity;
+            for (let i = 0; i < sektor.length; i++) {
+                if (berikut.includes(i) && i !== markas[k]) continue;   // jangan dobel
+                const d = Math.hypot(sektor[i].x - sx, sektor[i].y - sy);
+                if (d < bd) { bd = d; best = i; }
+            }
+            if (best >= 0) berikut[k] = best;
+        }
+        markas = berikut;
+    }
+
+    tugaskanFaksi(markas);
+    sektor.forEach(s => { s.markas = false; });
+    markas.forEach((si, k) => {
+        FAKSI[k + 1].markas = si;
+        sektor[si].markas = true;
+        sektor[si].faksi = k + 1;      // markas selalu milik faksinya
+    });
+    sektor.forEach(s => {
+        s.dijelajahi = s.markas || s.id.endsWith('7');  // placeholder
+        s.stasiun = s.markas || s.id.endsWith('3');     // placeholder
+    });
+}
+
+// [DATA] Jari-jari tiap wilayah dari markas, dipakai untuk gradien
+function hitungRadiusFaksi() {
+    radiusFaksi = new Array(FAKSI.length).fill(0);
+    for (let f = 1; f < FAKSI.length; f++) {
+        const m = sektor[FAKSI[f].markas];
+        let R = 1;
+        for (const s of sektor) {
+            if (s.faksi !== f) continue;
+            R = Math.max(R, Math.hypot(s.x - m.x, s.y - m.y));
+        }
+        radiusFaksi[f] = R;
+    }
+}
+
+// ==========================================
+// 5. WILAYAH: VORONOI, SIMPUL, DAN SISI (dihitung sekali)
+// ==========================================
+function potongSetengah(poli, nx, ny, c) {
+    const out = [];
+    for (let k = 0; k < poli.length; k++) {
+        const p = poli[k], q = poli[(k + 1) % poli.length];
+        const dp = nx * p.x + ny * p.y - c, dq = nx * q.x + ny * q.y - c;
+        const pin = dp <= 0, qin = dq <= 0;
+        if (pin) out.push(p);
+        if (pin !== qin) {
+            const t = dp / (dp - dq);
+            out.push({ x: p.x + (q.x - p.x) * t, y: p.y + (q.y - p.y) * t });
+        }
+    }
+    return out;
+}
+
+function hitungJenis(e) {
+    if (e.s.length < 2) e.jenis = 'peta';
+    else e.jenis = sektor[e.s[0]].faksi !== sektor[e.s[1]].faksi ? 'faksi' : 'dalam';
+}
+
+function bangunWilayah() {
+    const simpulMap = new Map();
+    simpul = [];
+    const idSimpul = (x, y) => {
+        const k = Math.round(x * 1000) + ',' + Math.round(y * 1000);
+        let id = simpulMap.get(k);
+        if (id === undefined) {
+            id = simpul.length;
+            const tepi = Math.abs(Math.abs(x) - DUNIA_HALF) < 1e-6 || Math.abs(Math.abs(y) - DUNIA_HALF) < 1e-6;
+            simpul.push({ x, y, tepi });
+            simpulMap.set(k, id);
+        }
+        return id;
+    };
+
+    for (const a of sektor) {
+        let poli = [
+            { x: -DUNIA_HALF, y: -DUNIA_HALF }, { x: DUNIA_HALF, y: -DUNIA_HALF },
+            { x: DUNIA_HALF, y: DUNIA_HALF },   { x: -DUNIA_HALF, y: DUNIA_HALF }
+        ];
+        for (let dj = -WINDOW_SEL; dj <= WINDOW_SEL; dj++) {
+            for (let di = -WINDOW_SEL; di <= WINDOW_SEL; di++) {
+                if (di === 0 && dj === 0) continue;
+                const gi = a.gi + di, gj = a.gj + dj;
+                if (gi < 0 || gj < 0 || gi >= GRID_N || gj >= GRID_N) continue;
+                const b = sektor[seedAt[gi + gj * GRID_N]];
+                poli = potongSetengah(poli, b.x - a.x, b.y - a.y,
+                    (b.x * b.x + b.y * b.y - a.x * a.x - a.y * a.y) / 2);
             }
         }
+        a.poli = poli.map(p => idSimpul(p.x, p.y));
     }
-}
 
-function bolehTaruhPendorong(ai, aj) {
-    const d = DEF.utama;
-    if (!INTI.ada) return false;
-    if (thrs.length >= JENIS_AKTIF.maksPendorong) return false;
-    if (aj <= INTI.j + INTI.h - 1) return false;
-
-    const pusat = INTI.i + Math.floor(INTI.w / 2);
-    const kiri = pusat - Math.floor(LEBAR_KOLOM / 2);
-    const kanan = kiri + LEBAR_KOLOM - 1;
-    if (ai < kiri || ai + d.w - 1 > kanan) return false;
-
-    if (ai < BATAS_I[0] || ai + d.w - 1 > BATAS_I[1]) return false;
-    if (aj < BATAS_J[0] || aj + d.h - 1 > BATAS_J[1]) return false;
-
-    let bersisian = false;
-    for (let x = 0; x < d.w; x++) {
-        for (let y = 0; y < d.h; y++) {
-            const i = ai + x, j = aj + y;
-            if (cells.has(kunci(i, j))) return false;
-            if (!bersisian) {
-                for (const [di, dj] of DIR4) {
-                    const n = cells.get(kunci(i + di, j + dj));
-                    if (n && (n.tipe === 'rangka' || n.tipe === 'inti')) { bersisian = true; break; }
-                }
-            }
+    const sisiMap = new Map();
+    tepiList = [];
+    for (let i = 0; i < sektor.length; i++) {
+        const s = sektor[i];
+        s.tepi = [];
+        const n = s.poli.length;
+        for (let k = 0; k < n; k++) {
+            const p = s.poli[k], q = s.poli[(k + 1) % n];
+            if (p === q) continue;
+            const lo = Math.min(p, q), hi = Math.max(p, q);
+            const key = lo + '-' + hi;
+            let e = sisiMap.get(key);
+            if (!e) { e = { a: lo, b: hi, s: [] }; sisiMap.set(key, e); tepiList.push(e); }
+            e.s.push(i);
         }
     }
-    return bersisian;
-}
 
-function bolehTaruhSel(i, j) {
-    if (i < BATAS_I[0] || i > BATAS_I[1] || j < BATAS_J[0] || j > BATAS_J[1]) return false;
-    if (cells.has(kunci(i, j))) return false;
-    return DIR4.some(([di, dj]) => cells.has(kunci(i + di, j + dj)));
-}
-
-function bolehTaruh(id, i, j) {
-    if (id === 'sel') return bolehTaruhSel(i, j);
-    return bolehTaruhPendorong(i, j);
-}
-
-function tempatkan(id, ai, aj) {
-    if (!bolehTaruh(id, ai, aj)) return false;
-    if (id === 'sel') {
-        cells.set(kunci(ai, aj), { i: ai, j: aj, tipe: 'sel', thr: null });
-        return true;
+    for (const v of simpul) {
+        if (v.tepi) continue;
+        const [dx, dy] = goyang(v.x, v.y);
+        v.x = clamp(v.x + dx, -DUNIA_HALF, DUNIA_HALF);
+        v.y = clamp(v.y + dy, -DUNIA_HALF, DUNIA_HALF);
     }
-    const d = DEF[id];
-    const t = { i: ai, j: aj, aktif: false, fp: [] };
-    for (let x = 0; x < d.w; x++) {
-        for (let y = 0; y < d.h; y++) {
-            const ci = ai + x, cj = aj + y;
-            cells.set(kunci(ci, cj), { i: ci, j: cj, tipe: 'thr', thr: t });
-            t.fp.push([ci, cj]);
+
+    for (const s of sektor) {
+        const n = s.poli.length;
+        let sum = 0, minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+        for (let k = 0; k < n; k++) {
+            const p = simpul[s.poli[k]], q = simpul[s.poli[(k + 1) % n]];
+            sum += p.x * q.y - q.x * p.y;
+            minX = Math.min(minX, p.x); maxX = Math.max(maxX, p.x);
+            minY = Math.min(minY, p.y); maxY = Math.max(maxY, p.y);
         }
+        s.luas = Math.abs(sum) / 2;
+        s.bb = [minX, minY, maxX, maxY];
     }
-    thrs.push(t);
+
+    for (const e of tepiList) {
+        for (const i of e.s) sektor[i].tepi.push(e);
+        hitungJenis(e);
+    }
+}
+
+// [LOGIKA] Markas terkunci: tidak bisa diambil lewat perubahan faksi biasa
+function setFaksiSektor(i, f) {
+    if (i < 0 || i >= sektor.length || f < 0 || f >= FAKSI.length) return false;
+    if (sektor[i].markas) return false;
+    sektor[i].faksi = f;
+    for (const e of sektor[i].tepi) hitungJenis(e);
+    hitungRadiusFaksi();
+    minta();
     return true;
 }
-
-function hapusDi(i, j) {
-    const c = cells.get(kunci(i, j));
-    if (!c) return;
-    if (c.tipe === 'sel') {
-        cells.delete(kunci(i, j));
-    } else if (c.tipe === 'thr') {
-        const t = c.thr;
-        for (const [fi, fj] of t.fp) {
-            const key = kunci(fi, fj);
-            if (rangkaSet.has(key)) cells.set(key, { i: fi, j: fj, tipe: 'rangka', thr: null });
-            else cells.delete(key);
-        }
-        thrs = thrs.filter(x => x !== t);
-    }
-}
+window.setFaksiSektor = setFaksiSektor;
 
 // ==========================================
-// 6. KONEKSI DAYA
+// 6. KAMERA: BATAS LUNAK, PEGAS, DAN MOMENTUM
 // ==========================================
-function hitungKoneksi() {
-    const seen = new Set(), q = [];
-    for (const [key, c] of cells) {
-        if (c.tipe === 'inti') { seen.add(key); q.push(key); }
+function fadeSektor() {
+    return clamp((kamera.skala - SKALA_FADE_MULAI) / (SKALA_FADE_SELESAI - SKALA_FADE_MULAI), 0, 1);
+}
+
+function toSX(xKm) { return (xKm - kamera.x) * kamera.skala + canvas.width / 2; }
+function toSY(yKm) { return (yKm - kamera.y) * kamera.skala + canvas.height / 2; }
+function dariSX(sx) { return (sx - canvas.width / 2) / kamera.skala + kamera.x; }
+function dariSY(sy) { return (sy - canvas.height / 2) / kamera.skala + kamera.y; }
+
+function batasKamera() {
+    const hw = canvas.width / 2 / kamera.skala;
+    const hh = canvas.height / 2 / kamera.skala;
+    let minX = -DUNIA_HALF + hw, maxX = DUNIA_HALF - hw;
+    let minY = -DUNIA_HALF + hh, maxY = DUNIA_HALF - hh;
+    if (minX > maxX) { minX = maxX = 0; }
+    if (minY > maxY) { minY = maxY = 0; }
+    return { minX, maxX, minY, maxY };
+}
+
+function sedangBergerak() {
+    const b = batasKamera();
+    const xKeluar = kamera.x < b.minX || kamera.x > b.maxX;
+    const yKeluar = kamera.y < b.minY || kamera.y > b.maxY;
+    return xKeluar || yKeluar || Math.abs(vel.x) > 0.5 || Math.abs(vel.y) > 0.5;
+}
+
+function langkahSumbu(sumbu, lo, hi, dt) {
+    const pos = kamera[sumbu];
+    const target = clamp(pos, lo, hi);
+    const over = pos - target;
+    const a = over !== 0
+        ? -PEGAS_K * over - PEGAS_D * vel[sumbu]
+        : -GESEK * vel[sumbu];
+    vel[sumbu] += a * dt;
+    kamera[sumbu] += vel[sumbu] * dt;
+
+    const sisa = kamera[sumbu] - clamp(kamera[sumbu], lo, hi);
+    if (Math.abs(sisa) < 0.01 && Math.abs(vel[sumbu]) < 0.5) {
+        kamera[sumbu] = clamp(kamera[sumbu], lo, hi);
+        vel[sumbu] = 0;
     }
-    while (q.length) {
-        const key = q.pop();
-        const c = cells.get(key);
-        for (const [di, dj] of DIR4) {
-            const nk = kunci(c.i + di, c.j + dj);
-            if (!seen.has(nk) && cells.has(nk)) { seen.add(nk); q.push(nk); }
-        }
-    }
-    for (const t of thrs) t.aktif = kapal.hidup && t.fp.some(([i, j]) => seen.has(kunci(i, j)));
-    kapal.tersambung = seen.size;
 }
 
-// ==========================================
-// 7. RUTE, PENYEDERHANAAN, DAN PELEBARAN
-// ==========================================
-function jarakKeSegmen(p, a, b) {
-    const dx = b.x - a.x, dy = b.y - a.y;
-    const L2 = dx * dx + dy * dy;
-    let t = L2 > 0 ? ((p.x - a.x) * dx + (p.y - a.y) * dy) / L2 : 0;
-    t = clamp(t, 0, 1);
-    return Math.hypot(p.x - (a.x + dx * t), p.y - (a.y + dy * t));
+function fisika(dt) {
+    const b = batasKamera();
+    langkahSumbu('x', b.minX, b.maxX, dt);
+    langkahSumbu('y', b.minY, b.maxY, dt);
 }
-
-function sederhanakan(pts) {
-    if (pts.length <= 2) return pts.map(p => ({ x: p.x, y: p.y }));
-    const out = [{ x: pts[0].x, y: pts[0].y }];
-    let anchor = 0;
-    for (let k = 2; k < pts.length; k++) {
-        let ok = true;
-        for (let m = anchor + 1; m < k; m++) {
-            if (jarakKeSegmen(pts[m], pts[anchor], pts[k]) > TOL_SIMPLIF) { ok = false; break; }
-        }
-        if (!ok) {
-            anchor = k - 1;
-            out.push({ x: pts[anchor].x, y: pts[anchor].y });
-        }
-    }
-    const last = pts[pts.length - 1];
-    out.push({ x: last.x, y: last.y });
-    return out;
-}
-
-function kecepatanBelok(besarSudut) {
-    const j = JENIS_AKTIF;
-    const belokMaks = A_LATERAL / j.omega;
-    let f = FAKTOR_SUDUT[FAKTOR_SUDUT.length - 1].f;
-    for (const t of FAKTOR_SUDUT) {
-        if (besarSudut <= t.maks) { f = t.f; break; }
-    }
-    return Math.min(belokMaks, j.lurus * f);
-}
-
-function jariBelok(v) {
-    return v / JENIS_AKTIF.omega;
-}
-
-function busurTikungan(A, P, B) {
-    const d1 = { x: A.x - P.x, y: A.y - P.y };
-    const d2 = { x: B.x - P.x, y: B.y - P.y };
-    const l1 = Math.hypot(d1.x, d1.y), l2 = Math.hypot(d2.x, d2.y);
-    if (l1 < 1 || l2 < 1) return null;
-    const u1 = { x: d1.x / l1, y: d1.y / l1 };
-    const u2 = { x: d2.x / l2, y: d2.y / l2 };
-    const cosA = clamp(u1.x * u2.x + u1.y * u2.y, -1, 1);
-    const sudut = Math.acos(cosA);
-    const belok = Math.PI - sudut;
-    if (belok < AMBANG_BELOK) return null;
-
-    const v = kecepatanBelok(belok);
-    const R = jariBelok(v);
-    const jarakTangen = R / Math.tan(sudut / 2);
-    if (jarakTangen > Math.min(l1, l2)) return null;
-
-    const T1 = { x: P.x + u1.x * jarakTangen, y: P.y + u1.y * jarakTangen };
-    const T2 = { x: P.x + u2.x * jarakTangen, y: P.y + u2.y * jarakTangen };
-    const bis = { x: u1.x + u2.x, y: u1.y + u2.y };
-    const lb = Math.hypot(bis.x, bis.y);
-    if (lb < 1e-6) return null;
-    const jarakPusat = R / Math.sin(sudut / 2);
-    const C0 = { x: P.x + (bis.x / lb) * jarakPusat, y: P.y + (bis.y / lb) * jarakPusat };
-    const a1 = Math.atan2(T1.y - C0.y, T1.x - C0.x);
-    const a2 = Math.atan2(T2.y - C0.y, T2.x - C0.x);
-    const da = sudutSelisih(a2, a1);
-    const titik = [];
-    const n = Math.max(2, Math.ceil(Math.abs(da) / BUSUR_LANGKAH));
-    for (let i = 0; i <= n; i++) {
-        const a = a1 + da * (i / n);
-        titik.push({ x: C0.x + R * Math.cos(a), y: C0.y + R * Math.sin(a) });
-    }
-    return { T1, T2, titik };
-}
-
-function lebarkanTikungan(pts) {
-    if (pts.length < 3) return pts;
-    const out = [pts[0]];
-    for (let i = 1; i < pts.length - 1; i++) {
-        const b = busurTikungan(pts[i - 1], pts[i], pts[i + 1]);
-        if (b) {
-            out.push(b.T1, ...b.titik.slice(1, -1), b.T2);
-        } else {
-            out.push(pts[i]);
-        }
-    }
-    out.push(pts[pts.length - 1]);
-    return out;
-}
-
-function proyeksiDariSeg(fromSeg) {
-    const r = kapal.rute;
-    if (r.length < 2) return null;
-    let best = null;
-    const hi = Math.min(r.length - 2, fromSeg + SEG_WINDOW);
-    for (let i = fromSeg; i <= hi; i++) {
-        const a = r[i], b = r[i + 1];
-        const dx = b.x - a.x, dy = b.y - a.y;
-        const L2 = dx * dx + dy * dy;
-        let t = L2 > 0 ? ((kapal.x - a.x) * dx + (kapal.y - a.y) * dy) / L2 : 0;
-        t = clamp(t, 0, 1);
-        const px = a.x + dx * t, py = a.y + dy * t;
-        const d = Math.hypot(kapal.x - px, kapal.y - py);
-        if (!best || d < best.d) best = { seg: i, x: px, y: py, d };
-    }
-    return best;
-}
-
-function updateSeg() {
-    const p = proyeksiDariSeg(kapal.seg);
-    if (p) kapal.seg = p.seg;
-    return p;
-}
-
-function sisaRuteDepan() {
-    const r = kapal.rute;
-    if (r.length < 2) return [];
-    const p = proyeksiDariSeg(kapal.seg);
-    if (!p) return [];
-    return [{ x: p.x, y: p.y }, ...r.slice(p.seg + 1)];
-}
-
-function sisaRute(p) {
-    const r = kapal.rute;
-    let s = dist(p, r[p.seg + 1]);
-    for (let i = p.seg + 1; i < r.length - 1; i++) s += dist(r[i], r[i + 1]);
-    return s;
-}
-
-function simpanganDariRute(p) {
-    const r = kapal.rute;
-    const a = r[p.seg], b = r[p.seg + 1];
-    const dx = b.x - a.x, dy = b.y - a.y;
-    const L = Math.hypot(dx, dy);
-    if (L < 1) return 0;
-    const nx = -dy / L, ny = dx / L;
-    return (kapal.x - p.x) * nx + (kapal.y - p.y) * ny;
-}
-
-function titikDepan(p, jarak) {
-    const r = kapal.rute;
-    let prev = { x: p.x, y: p.y }, acc = 0;
-    for (let i = p.seg + 1; i < r.length; i++) {
-        const seg = dist(prev, r[i]);
-        if (seg > 0 && acc + seg >= jarak) {
-            const t = (jarak - acc) / seg;
-            return { x: prev.x + (r[i].x - prev.x) * t, y: prev.y + (r[i].y - prev.y) * t };
-        }
-        acc += seg;
-        prev = r[i];
-    }
-    return r[r.length - 1];
-}
-
-function previewList() {
-    if (ptr && ptr.aksi === 'sambung') return [...sisaRuteDepan(), ...draftPts.slice(1)];
-    return draftPts;
-}
-
-function sedangGambar() {
-    return ptr && ptr.moved && (ptr.aksi === 'kapal' || ptr.aksi === 'sambung') && draftPts.length > 0;
-}
-
-function kunciJalur() {
-    let list = sederhanakan(previewList());
-    if (list.length < 2) return;
-    const akhir = list[list.length - 1];
-    const prev = list[list.length - 2];
-    const th = arahKe(akhir.x - prev.x, akhir.y - prev.y);
-    list = lebarkanTikungan(list);
-    kapal.rute = list;
-    kapal.seg = 0;
-    kapal.target = { x: akhir.x, y: akhir.y, th };
-}
-
-function resetGerak() {
-    kapal.target = null;
-    kapal.rute = [];
-    kapal.seg = 0;
-    kapal.v = 0;
-    kapal.nyala = 0;
-    kapal.koreksi = 0;
-    kapal.api = 0;
-    kapal.status = 'diam';
-}
-
-// ==========================================
-// 8. GERAK
-// ==========================================
-function massaKapal() { return Math.max(1, cells.size) * KG_PER_SEL; }
-function accelMaks(aktif) { return Math.min(aktif * F_THR / massaKapal(), ACEL_MAKS); }
-function jarakHenti(v) { return (v * v) / (2 * REM); }
-
-function kendali(dt) {
-    const k = kapal;
-    k.gas = false;
-
-    const aktif = thrs.filter(t => t.aktif).length;
-    if (aktif === 0) { resetGerak(); return; }
-    if (!k.target) { k.v = 0; k.nyala = 0; k.status = 'diam'; k.koreksi = 0; k.api = 0; return; }
-
-    const end = k.target;
-    const proj = updateSeg();
-
-    const sisaJarak = proj ? sisaRute(proj) : dist(k, end);
-    const ikutiJalur = !!proj && sisaJarak > LOOK_JARAK;
-
-    const perluRem = sisaJarak <= jarakHenti(k.v);
-
-    if (perluRem) {
-        k.v = Math.max(0, k.v - REM * dt);
-        k.status = 'rem';
-        k.koreksi = 0;
-        if (proj) {
-            const tp = titikDepan(proj, LOOK_JARAK);
-            const hdRem = arahKe(tp.x - k.x, tp.y - k.y);
-            const errRem = sudutSelisih(hdRem, k.th);
-            if (k.v > 0.5) {
-                const maksRem = JENIS_AKTIF.omega * dt;
-                k.th += clamp(errRem, -maksRem, maksRem);
-            }
-        }
-        k.x += Math.sin(k.th) * k.v * dt;
-        k.y += -Math.cos(k.th) * k.v * dt;
-        if (k.v <= 0.01) resetGerak();
-        else k.api = clamp(k.v / JENIS_AKTIF.lurus, 0, 1);
-        return;
-    }
-
-    let hd;
-    if (ikutiJalur) {
-        const tp = titikDepan(proj, LOOK_JARAK);
-        hd = arahKe(tp.x - k.x, tp.y - k.y);
-    } else {
-        hd = arahKe(end.x - k.x, end.y - k.y);
-    }
-
-    k.koreksi = 0;
-    if (ikutiJalur) {
-        const sim = simpanganDariRute(proj);
-        const batasTepi = (LEBAR_PITA / 2) * KOREKSI_TEPI;
-        const lewat = Math.abs(sim) - batasTepi;
-        if (lewat > 0) {
-            const porsi = clamp(lewat / ((LEBAR_PITA / 2) - batasTepi), 0, 1);
-            k.koreksi = (sim > 0 ? -1 : 1) * porsi;
-            hd += k.koreksi * AMBANG_BELOK;
-        }
-    }
-
-    const err = sudutSelisih(hd, k.th);
-
-    k.nyala += dt;
-    const s = clamp(k.nyala / SPOOL, 0, 1);
-    const daya = s * s * (3 - 2 * s);
-
-    const besarErr = Math.abs(err);
-    const vTarget = besarErr > AMBANG_BELOK
-        ? kecepatanBelok(besarErr)
-        : JENIS_AKTIF.lurus;
-
-    const vAkhir = Math.min(vTarget, Math.sqrt(2 * REM * Math.max(0, sisaJarak)));
-
-    if (k.v < vAkhir) {
-        k.v = Math.min(vAkhir, k.v + accelMaks(aktif) * daya * dt);
-    } else {
-        k.v = Math.max(vAkhir, k.v - REM * dt);
-    }
-    k.v = Math.max(0, k.v);
-
-    if (k.v > 0.5) {
-        const maks = JENIS_AKTIF.omega * dt;
-        k.th += clamp(err, -maks, maks);
-    }
-
-    k.api = clamp(k.v / JENIS_AKTIF.lurus, 0, 1);
-    k.gas = k.v > 0.5;
-    k.status = besarErr > AMBANG_BELOK ? 'belok' : (k.koreksi !== 0 ? 'koreksi' : 'lurus');
-
-    k.x += Math.sin(k.th) * k.v * dt;
-    k.y += -Math.cos(k.th) * k.v * dt;
-}
-
-// ==========================================
-// 9. BILAH, TOMBOL, ZOOM, DAN MODE
-// ==========================================
-function tombolBilah() {
-    const w = 70, g = 6, n = TOMBOL.length;
-    const total = n * w + (n - 1) * g;
-    const x0 = (canvas.width - total) / 2, y = canvas.height - 100;
-    return TOMBOL.map(([id, label], k) => ({ id, label, x: x0 + k * (w + g), y, w, h: 44 }));
-}
-function tombolBuild() { return { id: 'build', label: 'BUILD', x: canvas.width - 86, y: 10, w: 76, h: 32 }; }
-function tombolZoomIn() { return { id: 'zoomIn', label: '+', x: canvas.width - 54, y: canvas.height / 2 - 60, w: 44, h: 44 }; }
-function tombolZoomOut() { return { id: 'zoomOut', label: '−', x: canvas.width - 54, y: canvas.height / 2 + 10, w: 44, h: 44 }; }
 
 function ubahZoom(arah) {
-    kamera.skala = clamp(kamera.skala * (arah > 0 ? ZOOM_LANGKAH : 1 / ZOOM_LANGKAH), ZOOM_MIN, ZOOM_MAX);
+    kamera.skala = clamp(kamera.skala * (arah > 0 ? SKALA_LANGKAH : 1 / SKALA_LANGKAH), SKALA_MIN, SKALA_MAX);
+    bersihkanPilihan();
+    minta();
 }
 
-function hentikanSfx() {
-    sfxA.pause(); sfxB.pause();
-    sfxA.volume = 0; sfxB.volume = 0;
-    sfxMulai = false;
+function bersihkanPilihan() {
+    const sA = fadeSektor(), fA = 1 - sA;
+    if (sA < 0.3) dipilih = -1;
+    if (fA < 0.3) dipilihFaksi = -1;
 }
 
-// Mode bangun: pusat kerangka di (0,0) dunia, kapal.x/y = posisi inti (OFS_INTI)
-function masukBangun() {
-    mode = 'bangun'; kapal.hidup = false; resetGerak();
-    kapal.x = OFS_INTI.x; kapal.y = OFS_INTI.y; kapal.th = 0;
-    kamera.x = 0; kamera.y = 0; kamera.skala = SKALA_BANGUN;
-    hapusAktif = false; seret = null; pilihKapal = false; draftPts = [];
-    hentikanSfx();
+function hitungFling() {
+    const h = ptr.hist;
+    if (h.length < 2) return { x: 0, y: 0 };
+    const a = h[0], b = h[h.length - 1];
+    const now = performance.now();
+    if (now - b.t > 80) return { x: 0, y: 0 };
+    const dt = (b.t - a.t) / 1000;
+    if (dt < 0.016) return { x: 0, y: 0 };
+    let vx = (b.x - a.x) / dt, vy = (b.y - a.y) / dt;
+    const maks = FLING_MAX_PX / kamera.skala;
+    const mag = Math.hypot(vx, vy);
+    if (mag > maks) { vx *= maks / mag; vy *= maks / mag; }
+    return { x: vx, y: vy };
 }
 
-function konfirm() {
-    mode = 'uji'; kapal.hidup = true;
-    kamera.skala = 1; kamera.x = kapal.x; kamera.y = kapal.y;
-    hapusAktif = false; seret = null; pilihKapal = false; draftPts = [];
-    sfxA.play().then(() => sfxA.pause()).catch(() => {});
-    sfxB.play().then(() => sfxB.pause()).catch(() => {});
+function tombolKanan() {
+    return [
+        { id: 'pusat', x: canvas.width - 86, y: 10, w: 76, h: 32, t: 'PUSAT' },
+        { id: '+', x: canvas.width - 54, y: canvas.height / 2 - 60, w: 44, h: 44, t: '+' },
+        { id: '-', x: canvas.width - 54, y: canvas.height / 2 + 10, w: 44, h: 44, t: '−' }
+    ];
 }
 
 // ==========================================
-// 10. INPUT
+// 7. PICKING
 // ==========================================
-canvas.addEventListener('pointerdown', aman('pointerdown', e => {
+function didalamPoli(poli, x, y) {
+    let dalam = false;
+    for (let k = 0, m = poli.length - 1; k < poli.length; m = k++) {
+        const a = simpul[poli[k]], b = simpul[poli[m]];
+        if ((a.y > y) !== (b.y > y) && x < (b.x - a.x) * (y - a.y) / (b.y - a.y) + a.x) dalam = !dalam;
+    }
+    return dalam;
+}
+
+function sektorDiTitik(x, y) {
+    const gi = Math.floor((x + DUNIA_HALF) / CELL_KM);
+    const gj = Math.floor((y + DUNIA_HALF) / CELL_KM);
+    for (let dj = -1; dj <= 1; dj++) {
+        for (let di = -1; di <= 1; di++) {
+            const ci = gi + di, cj = gj + dj;
+            if (ci < 0 || cj < 0 || ci >= GRID_N || cj >= GRID_N) continue;
+            const i = seedAt[ci + cj * GRID_N];
+            if (didalamPoli(sektor[i].poli, x, y)) return i;
+        }
+    }
+    return -1;
+}
+
+function faksiDiTitik(x, y) {
+    const i = sektorDiTitik(x, y);
+    return i < 0 ? -1 : sektor[i].faksi;
+}
+
+function tap(p) {
+    const sA = fadeSektor(), fA = 1 - sA;
+    let kena = null;
+    for (const b of tombolKanan()) if (dalamKotak(p, b)) kena = b.id;
+
+    if (kena === '+') return ubahZoom(1);
+    if (kena === '-') return ubahZoom(-1);
+    if (kena === 'pusat') {
+        kamera.x = 0; kamera.y = 0; kamera.skala = SKALA_MIN;
+        vel.x = 0; vel.y = 0;
+        dipilih = -1; dipilihFaksi = -1;
+        return minta();
+    }
+
+    const xKm = dariSX(p.x), yKm = dariSY(p.y);
+    if (fA > 0.3) {
+        const f = faksiDiTitik(xKm, yKm);
+        dipilih = -1;
+        dipilihFaksi = (f > 0 && f !== dipilihFaksi) ? f : -1;
+    } else if (sA > 0.3) {
+        const i = sektorDiTitik(xKm, yKm);
+        dipilihFaksi = -1;
+        dipilih = (i === dipilih) ? -1 : i;
+    }
+    minta();
+}
+
+// ==========================================
+// 8. INPUT
+// ==========================================
+function resize() {
+    canvas.width = window.innerWidth;
+    canvas.height = window.innerHeight;
+    bgCanvas.width = window.innerWidth;
+    bgCanvas.height = window.innerHeight;
+    minta();
+}
+window.addEventListener('resize', resize);
+
+canvas.addEventListener('pointerdown', e => {
     e.preventDefault();
     const p = posisi(e);
-    ptr = { sx: p.x, sy: p.y, lx: p.x, ly: p.y, moved: false, aksi: '', id: null };
+    vel.x = 0; vel.y = 0;
+    ptr = {
+        sx: p.x, sy: p.y, lx: p.x, ly: p.y, moved: false,
+        hist: [{ t: performance.now(), x: kamera.x, y: kamera.y }]
+    };
+});
 
-    if (dalam(p, tombolZoomIn())) { ubahZoom(1); ptr.aksi = 'abaikan'; return; }
-    if (dalam(p, tombolZoomOut())) { ubahZoom(-1); ptr.aksi = 'abaikan'; return; }
-
-    if (mode === 'bangun') {
-        const b = tombolBilah().find(t => dalam(p, t));
-        if (b) {
-            ptr.id = b.id;
-            if (b.id === 'utama' || b.id === 'sel') {
-                ptr.aksi = 'tarik'; seret = { id: b.id, x: p.x, y: p.y };
-            } else ptr.aksi = 'bilah';
-            return;
-        }
-        ptr.aksi = 'grid'; return;
-    }
-
-    if (dalam(p, tombolBuild())) { ptr.aksi = 'build'; return; }
-
-    if (kapal.target && Math.hypot(p.x - toSX(kapal.target.x), p.y - toSY(kapal.target.y)) < UJUNG_SENTUH) {
-        ptr.aksi = 'sambung'; draftPts = [{ x: kapal.target.x, y: kapal.target.y }]; return;
-    }
-
-    // Sentuh kapal memakai area kerangka (pusatnya = inti digeser OFS_INTI)
-    const pusatKerangkaX = toSX(kapal.x - OFS_INTI.x), pusatKerangkaY = toSY(kapal.y - OFS_INTI.y);
-    if (Math.hypot(p.x - pusatKerangkaX, p.y - pusatKerangkaY) < RADIUS_SENTUH_KAPAL) {
-        ptr.aksi = 'kapal'; draftPts = []; return;
-    }
-
-    ptr.aksi = 'pan';
-}));
-
-canvas.addEventListener('pointermove', aman('pointermove', e => {
+canvas.addEventListener('pointermove', e => {
     if (!ptr) return;
     e.preventDefault();
     const p = posisi(e);
-    const dx = p.x - ptr.lx, dy = p.y - ptr.ly;
     if (Math.hypot(p.x - ptr.sx, p.y - ptr.sy) > 6) ptr.moved = true;
 
-    if (ptr.aksi === 'tarik' && seret) {
-        seret.x = p.x; seret.y = p.y;
-    } else if ((ptr.aksi === 'kapal' || ptr.aksi === 'sambung') && ptr.moved) {
-        const w = { x: dariSX(p.x), y: dariSY(p.y) };
-        if (ptr.aksi === 'kapal' && draftPts.length === 0) draftPts.push({ x: kapal.x, y: kapal.y });
-        const last = draftPts[draftPts.length - 1];
-        if (!last || Math.hypot(w.x - last.x, w.y - last.y) >= JALUR_STEP / kamera.skala) draftPts.push({ x: w.x, y: w.y });
-        pilihKapal = false;
-    } else if (ptr.aksi === 'pan' || ptr.aksi === 'grid') {
-        kamera.x -= dx / kamera.skala; kamera.y -= dy / kamera.skala;
+    if (ptr.moved) {
+        const b = batasKamera();
+        let dxKm = -(p.x - ptr.lx) / kamera.skala;
+        let dyKm = -(p.y - ptr.ly) / kamera.skala;
+
+        if ((kamera.x < b.minX && dxKm < 0) || (kamera.x > b.maxX && dxKm > 0)) dxKm *= RUBBER_FAKTOR;
+        if ((kamera.y < b.minY && dyKm < 0) || (kamera.y > b.maxY && dyKm > 0)) dyKm *= RUBBER_FAKTOR;
+
+        kamera.x += dxKm;
+        kamera.y += dyKm;
+
+        const cap = (MARGIN_PX * 1.5) / kamera.skala;
+        kamera.x = clamp(kamera.x, b.minX - cap, b.maxX + cap);
+        kamera.y = clamp(kamera.y, b.minY - cap, b.maxY + cap);
+
+        const now = performance.now();
+        ptr.hist.push({ t: now, x: kamera.x, y: kamera.y });
+        while (ptr.hist.length > 2 && now - ptr.hist[0].t > 100) ptr.hist.shift();
+        minta();
     }
     ptr.lx = p.x; ptr.ly = p.y;
-}));
+});
 
-canvas.addEventListener('pointerup', aman('pointerup', e => {
+canvas.addEventListener('pointerup', e => {
     if (!ptr) return;
     const p = posisi(e);
-    const bilahTop = canvas.height - 100;
-
-    switch (ptr.aksi) {
-        case 'tarik':
-            if (seret && p.y < bilahTop) {
-                const q = layarKeKisi(p.x, p.y);
-                const a = anchorFor(seret.id, q.i, q.j);
-                tempatkan(seret.id, a.i, a.j);
-            }
-            seret = null; break;
-        case 'bilah':
-            if (!ptr.moved) {
-                if (ptr.id === 'hapus') hapusAktif = !hapusAktif;
-                else if (ptr.id === 'ok') konfirm();
-            }
-            break;
-        case 'grid':
-            if (!ptr.moved && hapusAktif) {
-                const q = layarKeKisi(p.x, p.y);
-                hapusDi(q.i, q.j);
-            }
-            break;
-        case 'kapal':
-            if (ptr.moved && draftPts.length >= 2) kunciJalur();
-            else if (!ptr.moved && !kapal.target) pilihKapal = true;
-            draftPts = []; break;
-        case 'sambung':
-            if (ptr.moved && draftPts.length >= 2) kunciJalur();
-            draftPts = []; break;
-        case 'pan':
-            if (!ptr.moved) pilihKapal = false; break;
-        case 'build':
-            if (!ptr.moved) masukBangun(); break;
+    if (!ptr.moved) {
+        tap(p);
+    } else {
+        const v = hitungFling();
+        vel.x = v.x; vel.y = v.y;
     }
     ptr = null;
-}));
+    minta();
+});
 
-canvas.addEventListener('pointercancel', () => { ptr = null; seret = null; draftPts = []; });
+canvas.addEventListener('pointercancel', () => { ptr = null; minta(); });
 
 // ==========================================
-// 11. GAMBAR
+// 9. GAMBAR
 // ==========================================
-function gambarKisi() {
-    const s = C * kamera.skala;
-    if (s < 4) return;
-    const ox = ((toSX(0) % s) + s) % s;
-    const oy = ((toSY(0) % s) + s) % s;
-    ctx.strokeStyle = 'rgba(120,130,160,0.08)';
+function batasLayar() {
+    return { x0: dariSX(0), x1: dariSX(canvas.width), y0: dariSY(0), y1: dariSY(canvas.height) };
+}
+
+function bbDalam(bb, v) {
+    return bb[2] >= v.x0 && bb[0] <= v.x1 && bb[3] >= v.y0 && bb[1] <= v.y1;
+}
+
+function gambarGrid() {
+    const langkah = 40;
+    ctx.strokeStyle = `rgba(120,130,160,${GRID_ALPHA})`;
     ctx.lineWidth = 1;
     ctx.beginPath();
-    for (let x = ox; x < canvas.width; x += s) { ctx.moveTo(x + 0.5, 0); ctx.lineTo(x + 0.5, canvas.height); }
-    for (let y = oy; y < canvas.height; y += s) { ctx.moveTo(0, y + 0.5); ctx.lineTo(canvas.width, y + 0.5); }
+    const ox = ((toSX(0) % langkah) + langkah) % langkah;
+    const oy = ((toSY(0) % langkah) + langkah) % langkah;
+    for (let x = ox; x < canvas.width; x += langkah) { ctx.moveTo(x + 0.5, 0); ctx.lineTo(x + 0.5, canvas.height); }
+    for (let y = oy; y < canvas.height; y += langkah) { ctx.moveTo(0, y + 0.5); ctx.lineTo(canvas.width, y + 0.5); }
     ctx.stroke();
 }
 
-function gambarApi(t, waktu) {
-    if (!siapGambar(gbr.efek)) return;
-    const img = gbr.efek;
-    const skalaTinggi = PENDORONG_LEBAR / img.naturalWidth;
-    const intensitas = clamp(kapal.api, 0, 1);
-    if (intensitas < 0.02) return;
-    const fraksi = clamp(0.1 + 0.9 * intensitas, 0.1, 1);
-    const nyalaKecil = clamp(0.9 + 0.1 * Math.sin(waktu * 0.02 + t.i), 0.8, 1);
-    const kedip = clamp(0.8 + 0.1 * Math.sin(waktu * 0.03) + 0.1 * Math.sin(waktu * 0.047 + t.j), 0.6, 1);
-    const goyang = Math.sin(waktu * 0.015 + t.i * 0.5) * 0.4;
-    const rot = Math.sin(waktu * 0.02 + t.j) * (0.7 * Math.PI / 180);
-    const tinggiSumber = img.naturalHeight * fraksi * nyalaKecil;
-    const sy = img.naturalHeight - tinggiSumber;
-    const tinggiTampil = tinggiSumber * skalaTinggi;
-    const x = t.i * C - PX + PENDORONG_LEBAR / 2 + goyang;
-    const y = t.j * C - PY + 48;
-
+function gambarLuarPeta() {
+    const x0 = toSX(-DUNIA_HALF), y0 = toSY(-DUNIA_HALF);
+    const x1 = toSX(DUNIA_HALF), y1 = toSY(DUNIA_HALF);
     ctx.save();
-    ctx.globalAlpha = 0.9 * kedip * intensitas;
-    ctx.translate(x, y);
-    ctx.rotate(rot);
-    ctx.drawImage(img, 0, sy, img.naturalWidth, tinggiSumber,
-                  -PENDORONG_LEBAR / 2, 0, PENDORONG_LEBAR, tinggiTampil);
-    ctx.restore();
-}
-
-let intiRedup = null;
-function siapkanIntiRedup() {
-    if (intiRedup || !siapGambar(gbr.inti)) return;
-    const c = document.createElement('canvas');
-    c.width = KW; c.height = KH;
-    const g = c.getContext('2d');
-    g.filter = 'grayscale(100%) brightness(45%)';
-    g.drawImage(gbr.inti, 0, 0, KW, KH);
-    intiRedup = c;
-}
-
-// (x, y) adalah posisi INTI. Gambar digeser OFS_INTI supaya pusat inti jatuh di (x, y).
-function gambarKapalPada(x, y, th, alpha, overlay, waktu = 0) {
-    ctx.save();
-    try {
-        ctx.globalAlpha = alpha;
-        ctx.translate(toSX(x), toSY(y));
-        ctx.scale(kamera.skala, kamera.skala);
-        ctx.rotate(th);
-        ctx.translate(-OFS_INTI.x, -OFS_INTI.y);
-
-        if (siapGambar(gbr.rangka)) ctx.drawImage(gbr.rangka, -PX, -PY, KW, KH);
-
-        if (INTI.ada) {
-            if (kapal.hidup && siapGambar(gbr.inti)) {
-                ctx.drawImage(gbr.inti, -PX, -PY, KW, KH);
-            } else {
-                siapkanIntiRedup();
-                if (intiRedup) ctx.drawImage(intiRedup, -PX, -PY, KW, KH);
-            }
-        }
-
-        if (siapGambar(gbr.sel)) {
-            for (const c of cells.values()) {
-                if (c.tipe === 'sel') ctx.drawImage(gbr.sel, c.i * C - PX, c.j * C - PY, C, C);
-            }
-        }
-
-        if (siapGambar(gbr.utama)) {
-            for (const t of thrs) ctx.drawImage(gbr.utama, t.i * C - PX, t.j * C - PY, 32, 48);
-        }
-
-        if (alpha === 1 && kapal.api > 0.02) {
-            for (const t of thrs) {
-                if (t.aktif) gambarApi(t, waktu);
-            }
-        }
-
-        if (overlay) {
-            ctx.lineWidth = 1 / kamera.skala;
-            ctx.setLineDash([4, 3]);
-            ctx.strokeStyle = 'rgba(253,224,71,0.5)';
-            ctx.strokeRect(BATAS_I[0] * C - PX, BATAS_J[0] * C - PY,
-                (BATAS_I[1] + 1 - BATAS_I[0]) * C, (BATAS_J[1] + 1 - BATAS_J[0]) * C);
-            ctx.setLineDash([]);
-        }
-    } finally { ctx.restore(); }
-}
-
-function gambarKapal() { gambarKapalPada(kapal.x, kapal.y, kapal.th, 1, mode === 'bangun', performance.now()); }
-
-function gambarPita(list, warna) {
-    if (list.length < 1) return;
-    ctx.save();
-    ctx.strokeStyle = warna;
-    ctx.globalAlpha = PITA_ALPHA;
-    ctx.lineWidth = LEBAR_PITA * kamera.skala;
-    ctx.lineCap = 'round';
-    ctx.lineJoin = 'round';
     ctx.beginPath();
-    ctx.moveTo(toSX(kapal.x), toSY(kapal.y));
-    for (const p of list) ctx.lineTo(toSX(p.x), toSY(p.y));
-    ctx.stroke();
+    ctx.rect(0, 0, canvas.width, canvas.height);
+    ctx.rect(x0, y0, x1 - x0, y1 - y0);
+    ctx.fillStyle = `rgba(0,0,0,${LUAR_ALPHA})`;
+    ctx.fill('evenodd');
     ctx.restore();
 }
 
-function gambarJalur() {
-    if (mode !== 'uji') return;
-    if (sedangGambar()) {
-        gambarPita(previewList(), 'rgba(147,197,253,1)');
-        return;
+function jalurPoli(poli) {
+    let v = simpul[poli[0]];
+    ctx.moveTo(toSX(v.x), toSY(v.y));
+    for (let k = 1; k < poli.length; k++) {
+        v = simpul[poli[k]];
+        ctx.lineTo(toSX(v.x), toSY(v.y));
     }
-    if (kapal.target && kapal.rute.length >= 2) {
-        gambarPita(sisaRuteDepan(), 'rgba(253,224,71,1)');
-    }
+    ctx.closePath();
 }
 
-function alphaBayangan() {
-    if (!kapal.target) return BAYANGAN_ALPHA;
-    const jarak = dist(kapal, kapal.target);
-    const f = clamp((jarak - BAYANGAN_JARAK_DEKAT) / (BAYANGAN_JARAK_JAUH - BAYANGAN_JARAK_DEKAT), 0, 1);
-    return BAYANGAN_ALPHA * f;
+function strokeBatch(list) {
+    if (!list.length) return;
+    ctx.beginPath();
+    for (const e of list) {
+        const a = simpul[e.a], b = simpul[e.b];
+        ctx.moveTo(toSX(a.x), toSY(a.y));
+        ctx.lineTo(toSX(b.x), toSY(b.y));
+    }
+    ctx.stroke();
 }
 
-function gambarBayangan() {
-    if (mode !== 'uji') return;
-    if (sedangGambar()) {
-        const list = previewList();
-        const last = list[list.length - 1];
-        const prev = list.length >= 2 ? list[list.length - 2] : { x: kapal.x, y: kapal.y };
-        const th = (last.x === prev.x && last.y === prev.y) ? kapal.th : arahKe(last.x - prev.x, last.y - prev.y);
-        gambarKapalPada(last.x, last.y, th, BAYANGAN_ALPHA, false);
-    }
-    if (kapal.target) {
-        gambarKapalPada(kapal.target.x, kapal.target.y, kapal.target.th, alphaBayangan(), false);
-    } else if (pilihKapal && !sedangGambar()) {
-        gambarKapalPada(kapal.x, kapal.y, kapal.th, BAYANGAN_ALPHA, false);
-    }
+function sisiSorot(e) {
+    if (e.jenis === 'peta') return false;
+    if (dipilih >= 0 && e.s.includes(dipilih)) return true;
+    if (dipilihFaksi > 0 && e.jenis === 'faksi' && e.s.some(i => sektor[i].faksi === dipilihFaksi)) return true;
+    return false;
 }
 
-function gambarSeret() {
-    if (!seret) return;
-    const bilahTop = canvas.height - 100;
-    const img = seret.id === 'utama' ? gbr.utama : gbr.sel;
-    if (seret.y < bilahTop) {
-        const q = layarKeKisi(seret.x, seret.y);
-        const a = anchorFor(seret.id, q.i, q.j);
-        const d = DEF[seret.id];
-        const ok = bolehTaruh(seret.id, a.i, a.j);
-        const s = kamera.skala;
-        const x0 = toSX(a.i * C - PX + kapal.x - OFS_INTI.x - kapal.x + OFS_INTI.x);
-        const y0 = toSY(a.j * C - PY);
-        const w = d.w * C * s, h = d.h * C * s;
-        ctx.fillStyle = ok ? 'rgba(74,222,128,0.35)' : 'rgba(248,113,113,0.35)';
-        ctx.fillRect(x0, y0, w, h);
-        ctx.strokeStyle = ok ? '#4ade80' : '#f87171';
-        ctx.lineWidth = 2;
-        ctx.strokeRect(x0, y0, w, h);
-        if (siapGambar(img)) {
-            ctx.globalAlpha = 0.6;
-            ctx.drawImage(img, x0, y0, w, h);
+// [RENDER] Isi wilayah: gradien radial dari markas ke tepi, memudar di zoom sektor
+function gambarWilayah(sA, fA) {
+    const v = batasLayar();
+    const vis = [];
+    for (let i = 0; i < sektor.length; i++) if (bbDalam(sektor[i].bb, v)) vis.push(i);
+
+    if (fA > 0.01) {
+        for (let f = 0; f < FAKSI.length; f++) {
+            const redup = dipilihFaksi > 0 && f !== dipilihFaksi ? REDUP_LAIN : 1;
+            const rgb = FAKSI[f].rgb;
+
+            if (f === 0) {
+                ctx.fillStyle = rgbaStr(rgb, NETRAL_ALPHA * fA * redup);
+            } else {
+                const m = sektor[FAKSI[f].markas];
+                const cx = toSX(m.x), cy = toSY(m.y);
+                const R = Math.max(1, radiusFaksi[f]) * kamera.skala;
+                const g = ctx.createRadialGradient(cx, cy, 0, cx, cy, R);
+                g.addColorStop(0, rgbaStr(rgb, ALPHA_PUSAT * fA * redup));
+                g.addColorStop(0.6, rgbaStr(rgb, ALPHA_PUSAT * 0.55 * fA * redup));
+                g.addColorStop(1, rgbaStr(rgb, ALPHA_TEPI * fA * redup));
+                ctx.fillStyle = g;
+            }
+            ctx.beginPath();
+            for (const i of vis) if (sektor[i].faksi === f) jalurPoli(sektor[i].poli);
+            ctx.fill();
+        }
+
+        // [RENDER] Butir halus: satu pola, satu fill untuk semua wilayah faksi
+        if (TEKSTUR_ALPHA > 0 && polaTekstur) {
+            ctx.fillStyle = polaTekstur;
+            ctx.globalAlpha = TEKSTUR_ALPHA * fA;
+            ctx.beginPath();
+            for (const i of vis) if (sektor[i].faksi !== 0) jalurPoli(sektor[i].poli);
+            ctx.fill();
             ctx.globalAlpha = 1;
         }
     }
-    if (siapGambar(img)) {
-        const iw = img.naturalWidth * 1.5, ih = img.naturalHeight * 1.5;
-        ctx.globalAlpha = 0.9;
-        ctx.drawImage(img, seret.x - iw / 2, seret.y - 70 - ih / 2, iw, ih);
-        ctx.globalAlpha = 1;
+
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+
+    // [RENDER] Batas faksi berwarna campuran dua faksi yang berbatasan
+    const batas = { peta: [], dalam: [] };
+    const perPasangan = new Map();
+    const sorot = [];
+    for (const e of tepiList) {
+        const a = simpul[e.a], b = simpul[e.b];
+        const minX = Math.min(a.x, b.x), maxX = Math.max(a.x, b.x);
+        const minY = Math.min(a.y, b.y), maxY = Math.max(a.y, b.y);
+        if (maxX < v.x0 || minX > v.x1 || maxY < v.y0 || minY > v.y1) continue;
+        if (sisiSorot(e)) { sorot.push(e); continue; }
+        if (e.jenis === 'faksi') {
+            const f1 = sektor[e.s[0]].faksi, f2 = sektor[e.s[1]].faksi;
+            const key = Math.min(f1, f2) * 10 + Math.max(f1, f2);
+            let grup = perPasangan.get(key);
+            if (!grup) {
+                const r1 = FAKSI[f1].rgb, r2 = FAKSI[f2].rgb;
+                grup = { rgb: [(r1[0] + r2[0]) / 2, (r1[1] + r2[1]) / 2, (r1[2] + r2[2]) / 2], list: [] };
+                perPasangan.set(key, grup);
+            }
+            grup.list.push(e);
+        } else {
+            batas[e.jenis].push(e);
+        }
     }
+
+    ctx.strokeStyle = 'rgba(255,255,255,0.18)';
+    ctx.lineWidth = 0.8;
+    strokeBatch(batas.peta);
+
+    const aBatas = 0.55 * Math.max(fA, sA);
+    ctx.lineWidth = 0.9;
+    for (const grup of perPasangan.values()) {
+        ctx.strokeStyle = rgbaStr(grup.rgb, aBatas.toFixed(3));
+        strokeBatch(grup.list);
+    }
+
+    if (sA > 0.01) {
+        ctx.strokeStyle = `rgba(255,255,255,${(0.08 * sA).toFixed(3)})`;
+        ctx.lineWidth = 0.5;
+        strokeBatch(batas.dalam);
+    }
+
+    ctx.strokeStyle = 'rgba(253,224,71,1)';
+    ctx.lineWidth = 3;
+    strokeBatch(sorot);
 }
 
-// Penunjuk tepi layar: arah dan jarak ke inti kapal saat di luar layar
-function gambarPenanda() {
-    if (mode !== 'uji' || !kapal.hidup) return;
+function gambarTitikSektor(sA) {
+    if (sA < 0.01) return;
+    const v = batasLayar();
+    ctx.globalAlpha = sA;
+    for (let i = 0; i < sektor.length; i++) {
+        const s = sektor[i];
+        if (!bbDalam(s.bb, v)) continue;
+        const sx = toSX(s.x), sy = toSY(s.y);
+        const warna = FAKSI[s.faksi].rgb;
 
-    const sx = toSX(kapal.x), sy = toSY(kapal.y);
-    const margin = 40;
-    if (sx > margin && sx < canvas.width - margin && sy > margin && sy < canvas.height - margin) return;
+        if (i === dipilih) {
+            ctx.strokeStyle = '#fde68a';
+            ctx.lineWidth = 2;
+            ctx.beginPath();
+            ctx.arc(sx, sy, 10, 0, Math.PI * 2);
+            ctx.stroke();
+        }
+        ctx.beginPath();
+        ctx.arc(sx, sy, s.markas ? 5 : 3, 0, Math.PI * 2);
+        ctx.fillStyle = s.dijelajahi ? rgbaStr(warna, 1) : 'rgba(90,100,120,0.8)';
+        ctx.fill();
 
-    const cx = canvas.width / 2, cy = canvas.height / 2;
-    const ang = Math.atan2(sy - cy, sx - cx);
-
-    const dx = Math.cos(ang), dy = Math.sin(ang);
-    const tX = dx !== 0 ? ((dx > 0 ? canvas.width - margin : margin) - cx) / dx : Infinity;
-    const tY = dy !== 0 ? ((dy > 0 ? canvas.height - margin : margin) - cy) / dy : Infinity;
-    const t = Math.min(tX, tY);
-    const px = cx + dx * t, py = cy + dy * t;
-
-    ctx.save();
-    ctx.translate(px, py);
-    ctx.rotate(ang);
-    ctx.fillStyle = 'rgba(253,224,71,0.9)';
-    ctx.beginPath();
-    ctx.moveTo(10, 0);
-    ctx.lineTo(-7, -7);
-    ctx.lineTo(-7, 7);
-    ctx.closePath();
-    ctx.fill();
-    ctx.restore();
-
-    const jarakDunia = dist(kapal, { x: kamera.x, y: kamera.y });
-    const teksJarak = jarakDunia < 1000
-        ? `${Math.round(jarakDunia).toLocaleString('id-ID')} m`
-        : `${(jarakDunia / 1000).toFixed(1).replace('.', ',')} km`;
-    ctx.fillStyle = '#fde68a';
-    ctx.font = '12px monospace';
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    ctx.fillText(teksJarak, px - dx * 26, py - dy * 26);
+        if (s.stasiun && s.dijelajahi) {
+            ctx.fillStyle = '#fde68a';
+            ctx.fillRect(sx + 6, sy - 10, 6, 6);
+        }
+        if (kamera.skala > 0.5) {
+            ctx.font = '10px monospace';
+            ctx.textAlign = 'left';
+            ctx.textBaseline = 'alphabetic';
+            ctx.fillStyle = s.dijelajahi ? '#fde68a' : 'rgba(180,190,210,0.6)';
+            ctx.fillText(s.dijelajahi ? s.id : '?', sx + 8, sy + 3);
+        }
+    }
+    ctx.globalAlpha = 1;
 }
 
-function gambarTombolKotak(b, label, aktif) {
-    ctx.fillStyle = aktif ? 'rgba(253,224,71,0.35)' : 'rgba(0,0,0,0.7)';
-    ctx.strokeStyle = '#fde68a';
-    ctx.lineWidth = 2;
-    ctx.fillRect(b.x, b.y, b.w, b.h);
-    ctx.strokeRect(b.x, b.y, b.w, b.h);
-    ctx.fillStyle = '#fde68a';
-    ctx.font = '14px monospace';
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    ctx.fillText(label, b.x + b.w / 2, b.y + b.h / 2);
+function gambarMarkas(fA) {
+    if (fA < 0.01) return;
+    for (let f = 1; f < FAKSI.length; f++) {
+        const m = sektor[FAKSI[f].markas];
+        const sx = toSX(m.x), sy = toSY(m.y);
+        const warna = FAKSI[f].rgb;
+        const r = f === dipilihFaksi ? 13 : 10;
+        const redup = dipilihFaksi > 0 && f !== dipilihFaksi ? REDUP_LAIN : 1;
+
+        ctx.globalAlpha = fA * redup;
+        ctx.beginPath();
+        ctx.arc(sx, sy, r + 6, 0, Math.PI * 2);
+        ctx.fillStyle = rgbaStr(warna, 0.25);
+        ctx.fill();
+        ctx.beginPath();
+        ctx.arc(sx, sy, r, 0, Math.PI * 2);
+        ctx.fillStyle = rgbaStr(warna, 1);
+        ctx.fill();
+        ctx.strokeStyle = '#ffffff';
+        ctx.lineWidth = 2;
+        ctx.stroke();
+        ctx.font = '12px monospace';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'top';
+        ctx.fillStyle = '#fde68a';
+        ctx.fillText(FAKSI[f].nama, sx, sy + r + 8);
+    }
+    ctx.globalAlpha = 1;
 }
 
-function gambarUI() {
-    const aktif = thrs.filter(t => t.aktif).length;
-    const baris = [
-        `Mode: ${mode === 'bangun' ? 'BANGUN' : 'UJI'}`,
-        `Jenis aktif: kruiser`,
-        `Inti: ${INTI.ada ? `(${INTI.i},${INTI.j}) ${INTI.w}x${INTI.h}` : 'TIDAK TERBACA'}`,
-        `Acuan: inti (ofs ${OFS_INTI.x.toFixed(0)}, ${OFS_INTI.y.toFixed(0)})`,
-        `Kolom pendorong: ${LEBAR_KOLOM} sel (batas ${JENIS_AKTIF.batasSel})`,
-        `Sambung: ${kapal.tersambung}/${cells.size}`,
-        `Massa: ${cells.size} ton`,
-        `Utama aktif: ${aktif}/${thrs.length} (maks ${JENIS_AKTIF.maksPendorong})`,
-        `Akselerasi maks: ${accelMaks(aktif).toFixed(1)} m/s²`,
-        `Rem: ${REM} m/s²`,
-        `Lurus maks: ${JENIS_AKTIF.lurus} px/s`,
-        `Laju putar: ${JENIS_AKTIF.omega} rad/s`,
-        `Jari-jari belok: ${jariBelok(JENIS_AKTIF.lurus).toFixed(0)} px`,
-        `Status: ${kapal.status}`,
-        `Kecepatan: ${kapal.v.toFixed(1)} px/s`,
-        `Koreksi tepi: ${kapal.koreksi.toFixed(2)}`,
-        `Heading: ${((kapal.th * 180 / Math.PI + 360) % 360).toFixed(0)}°`,
-        `Rute: ${kapal.rute.length} titik`,
-        `Hapus: ${hapusAktif ? 'AKTIF' : 'mati'}`,
-        `Zoom: ${kamera.skala.toFixed(2)}`
-    ];
-    ctx.save();
+function gambarPanel(sA) {
+    const jumlah = FAKSI.map((_, i) => sektor.filter(s => s.faksi === i).length);
+    const dijelajahi = sektor.filter(s => s.dijelajahi).length;
+    const stasiun = sektor.filter(s => s.stasiun && s.dijelajahi).length;
+
+    ctx.fillStyle = 'rgba(0,0,0,0.7)';
+    ctx.fillRect(8, 8, 300, 74);
     ctx.fillStyle = '#fde68a';
     ctx.font = '13px monospace';
     ctx.textAlign = 'left';
     ctx.textBaseline = 'top';
-    baris.forEach((t, i) => ctx.fillText(t, 10, 10 + i * 17));
-    ctx.restore();
-}
+    ctx.fillText('PETA ANTAR SEKTOR', 16, 14);
+    ctx.fillText(`Sektor: ${sektor.length}   Dijelajahi: ${dijelajahi}`, 16, 34);
+    ctx.fillText(`Stasiun aktif: ${stasiun}`, 16, 52);
+    ctx.fillText(`Zoom: ${kamera.skala.toFixed(2)}`, 16, 68);
 
-function gambarError() {
-    if (!errorTerakhir) return;
-    ctx.save();
-    ctx.fillStyle = 'rgba(80,0,0,0.92)';
-    ctx.fillRect(0, 0, canvas.width, 60);
-    ctx.fillStyle = '#fca5a5';
-    ctx.font = '12px monospace';
-    ctx.textAlign = 'left';
-    ctx.textBaseline = 'top';
-    ctx.fillText('ERROR:', 10, 6);
-    ctx.fillText(errorTerakhir.slice(0, 120), 10, 22);
-    ctx.fillText(errorTerakhir.slice(120, 240), 10, 38);
-    ctx.restore();
-}
+    let ly = 90;
+    ctx.font = '11px monospace';
+    FAKSI.forEach((f, i) => {
+        ctx.fillStyle = rgbaStr(f.rgb, 1);
+        ctx.fillRect(16, ly + 2, 10, 10);
+        ctx.fillStyle = '#fde68a';
+        ctx.fillText(`${f.nama} (${jumlah[i]})`, 32, ly);
+        ly += 16;
+    });
 
-function updateSuara() {
-    const aktif = thrs.filter(t => t.aktif).length;
-    const bisaBunyi = mode === 'uji' && kapal.hidup && aktif > 0 && kapal.v > 0.5;
-
-    if (!bisaBunyi) {
-        sfxA.volume = Math.max(0, sfxA.volume - 0.05);
-        sfxB.volume = Math.max(0, sfxB.volume - 0.05);
-        return;
+    if (dipilihFaksi > 0) {
+        const f = FAKSI[dipilihFaksi];
+        const pw = 260, ph = 80;
+        const px = 8, py = canvas.height - ph - 110;
+        ctx.fillStyle = 'rgba(0,0,0,0.8)';
+        ctx.fillRect(px, py, pw, ph);
+        ctx.strokeStyle = '#fde68a';
+        ctx.strokeRect(px + 0.5, py + 0.5, pw - 1, ph - 1);
+        ctx.fillStyle = '#fde68a';
+        ctx.font = '13px monospace';
+        ctx.fillText(f.nama, px + 10, py + 10);
+        ctx.font = '11px monospace';
+        ctx.fillStyle = '#e5e7eb';
+        ctx.fillText(`Markas: ${sektor[f.markas].id}`, px + 10, py + 30);
+        ctx.fillText(`Wilayah: ${jumlah[dipilihFaksi]} sektor`, px + 10, py + 46);
     }
 
-    const ukuranMaks = JENIS_AKTIF.batasSel * C;
-    const jarakMulai = ukuranMaks * FAKTOR_JARAK;
-    const jarakDekat = ukuranMaks * 0.5;
-
-    const jarakDunia = Math.hypot(kapal.x - kamera.x, kapal.y - kamera.y);
-    const jarakLayar = jarakDunia * kamera.skala;
-    const faktorJarak = 1 - clamp((jarakLayar - jarakDekat) / (jarakMulai - jarakDekat), 0, 1);
-
-    const fraksi = clamp(kapal.v / JENIS_AKTIF.lurus, 0, 1);
-    const pengaliBelok = kapal.status === 'belok' ? SFX_VOLUME_SAAT_BELOK : 1;
-    const pengaliRem = kapal.status === 'rem' ? fraksi : 1;
-
-    const volTarget = clamp(SFX_VOLUME_DASAR * fraksi * faktorJarak * pengaliBelok * pengaliRem, 0, 1);
-
-    if (!sfxMulai) {
-        sfxMulai = true;
-        sfxAktif = sfxA;
-        sfxA.currentTime = 0;
-        sfxA.play().catch(() => {});
+    if (sA > 0.3 && dipilih >= 0) {
+        const s = sektor[dipilih];
+        const pw = 260, ph = 120;
+        const px = 8, py = canvas.height - ph - 110;
+        ctx.fillStyle = 'rgba(0,0,0,0.8)';
+        ctx.fillRect(px, py, pw, ph);
+        ctx.strokeStyle = '#fde68a';
+        ctx.strokeRect(px + 0.5, py + 0.5, pw - 1, ph - 1);
+        ctx.fillStyle = '#fde68a';
+        ctx.font = '13px monospace';
+        ctx.fillText(`${s.id}  (${FAKSI[s.faksi].nama})`, px + 10, py + 10);
+        ctx.font = '11px monospace';
+        ctx.fillStyle = '#e5e7eb';
+        ctx.fillText(`Luas: ${s.luas.toFixed(0)} km²`, px + 10, py + 30);
+        ctx.fillText(`Status: ${s.dijelajahi ? 'sudah dijelajahi' : 'belum dijelajahi'}`, px + 10, py + 46);
+        ctx.fillText(`Stasiun: ${s.stasiun ? (s.dijelajahi ? 'aktif' : 'ada, belum terbaca') : 'tidak ada'}`, px + 10, py + 62);
     }
 
-    const sisa = sfxAktif.duration - sfxAktif.currentTime;
-    if (isFinite(sisa) && sisa < SFX_FADE_DETIK) {
-        const lain = sfxAktif === sfxA ? sfxB : sfxA;
-        if (lain.paused || lain.currentTime > 0.5) {
-            lain.currentTime = 0;
-            lain.play().catch(() => {});
-        }
-        sfxAktif = lain;
+    for (const b of tombolKanan()) {
+        ctx.fillStyle = 'rgba(0,0,0,0.7)';
+        ctx.fillRect(b.x, b.y, b.w, b.h);
+        ctx.strokeStyle = '#fde68a';
+        ctx.lineWidth = 2;
+        ctx.strokeRect(b.x, b.y, b.w, b.h);
+        ctx.fillStyle = '#fde68a';
+        ctx.font = '13px monospace';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(b.t, b.x + b.w / 2, b.y + b.h / 2);
     }
-
-    const kedua = sfxAktif === sfxA ? sfxB : sfxA;
-    const naik = Math.min(1, (sfxAktif.volume || 0) + 0.1);
-    sfxAktif.volume = clamp(Math.min(volTarget, naik), 0, 1);
-    kedua.volume = Math.max(0, kedua.volume - 0.05);
 }
 
 function gambar() {
-    ctx.fillStyle = '#07080d';
-    ctx.fillRect(0, 0, canvas.width, canvas.height);
-
-    coba('kisi', gambarKisi);
-    coba('jalur', gambarJalur);
-    coba('bayangan', gambarBayangan);
-    coba('kapal', gambarKapal);
-
-    if (mode === 'bangun') {
-        coba('seret', gambarSeret);
-        for (const b of tombolBilah()) {
-            const aktif = (seret && seret.id === b.id) || (b.id === 'hapus' && hapusAktif);
-            gambarTombolKotak(b, b.label, aktif);
-        }
-    } else {
-        gambarTombolKotak(tombolBuild(), 'BUILD', false);
-    }
-
-    gambarTombolKotak(tombolZoomIn(), '+', false);
-    gambarTombolKotak(tombolZoomOut(), '−', false);
-    coba('penanda', gambarPenanda);
-    coba('ui', gambarUI);
+    const sA = fadeSektor(), fA = 1 - sA;
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    gambarGrid();
+    gambarLuarPeta();
+    gambarWilayah(sA, fA);
+    gambarTitikSektor(sA);
+    gambarMarkas(fA);
+    gambarPanel(sA);
 }
 
 // ==========================================
-// 12. LOOP
+// 10. LOOP
 // ==========================================
-function loop(now) {
-    requestAnimationFrame(loop);
-    let dt = (now - terakhir) / 1000;
-    terakhir = now;
-    if (!(dt >= 0)) dt = 0;
-    if (dt > 0.05) dt = 0.05;
+function frame(now) {
+    rafAktif = false;
+    const dt = Math.min(0.05, (now - lastFrame) / 1000);
+    lastFrame = now;
+    try {
+        if (!(ptr && ptr.moved)) fisika(dt);
+        gambarBintang();
+        gambar();
+    } catch (err) { console.error(err); }
 
-    coba('logika', () => {
-        hitungKoneksi();
-        if (mode === 'uji') kendali(dt);
-        else {
-            resetGerak();
-            kapal.gas = false;
-            kapal.status = '-';
-        }
-    });
-
-    coba('gambar', gambar);
-    coba('suara', updateSuara);
-    try { gambarError(); } catch (_) {}
+    if (!(ptr && ptr.moved) && sedangBergerak()) minta();
 }
 
-function mulai() {
-    if (!gbr.rangka.complete || gbr.rangka.naturalWidth === 0 ||
-        !gbr.inti.complete || gbr.inti.naturalWidth === 0) {
-        setTimeout(mulai, 100);
-        return;
+// ==========================================
+// 11. MULAI
+// ==========================================
+function buatPola() {
+    const kanvasPola = document.createElement('canvas');
+    kanvasPola.width = kanvasPola.height = 96;
+    const g = kanvasPola.getContext('2d');
+    const r = mulberry32(77);
+    for (let i = 0; i < 160; i++) {
+        g.fillStyle = `rgba(255,255,255,${(0.2 + r() * 0.3).toFixed(2)})`;
+        g.fillRect(Math.floor(r() * 96), Math.floor(r() * 96), 1, 1);
     }
-    coba('initKapal', initKapal);
-    kapal.x = OFS_INTI.x; kapal.y = OFS_INTI.y;
-    requestAnimationFrame(loop);
+    polaTekstur = ctx.createPattern(kanvasPola, 'repeat');
 }
-mulai();
+
+resize();
+buatBintang();
+buatPola();
+bangunSektor();
+pilihMarkasDanFaksi();
+bangunWilayah();
+hitungRadiusFaksi();
+kamera.skala = SKALA_MIN;
+minta();
 </script>
 </body>
 </html>
