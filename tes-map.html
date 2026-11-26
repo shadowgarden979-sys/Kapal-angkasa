@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-<title>Peta Antar Sektor v16 (Total War)</title>
+<title>Peta Antar Sektor v18</title>
 <style>
 body,html{margin:0;padding:0;width:100%;height:100%;overflow:hidden;background:#07080d;font-family:monospace}
 #bintang{position:fixed;left:0;top:0;z-index:0;pointer-events:none}
@@ -17,30 +17,47 @@ body,html{margin:0;padding:0;width:100%;height:100%;overflow:hidden;background:#
 // ==========================================
 // 1. KONFIGURASI
 // ==========================================
-const VERSI='v16';
+const VERSI='v18';
+const KUNCI_SIMPAN='peta-antar-sektor-v18';
+const VERSI_SIMPAN=18;
+const SIMPAN_JEDA_MS=30000;
+const SIMPAN_MAKS_CHAR=4500000;
+
 const canvas=document.getElementById('gameCanvas'),ctx=canvas.getContext('2d');
 const bgCanvas=document.getElementById('bintang'),bgCtx=bgCanvas.getContext('2d');
 const bakeCanvas=document.createElement('canvas'),bakeCtx=bakeCanvas.getContext('2d');
 
 const SEED=979,DUNIA_HALF=2500,DUNIA_W=5000,GRID_N=78,CELL_KM=DUNIA_W/GRID_N;
 const JITTER_SEL=0.4,JITTER_KM=6,JITTER_SKALA=14,WINDOW_SEL=3;
-const FAKSI_RASIO=0.10,SPAWN_RADIUS_KM=2100,SPAWN_JARAK_MIN_KM=120;
+
+// [DATA] Faksi
+const FAKSI_RASIO=0.05;               // 5% dari jumlah sektor (±304 faksi)
+const SPAWN_RADIUS_KM=2100,SPAWN_JARAK_MIN_KM=120;
 const POIN_AWAL=2,MARKAS_AWAL_FREGAT=4;
-const CADANGAN=0.10;            // TURUN DARI 30% JADI 10%
-const BONUS_BERTAHAN=1.2;       
-const MARGIN_SERANG=1.05;       // TURUN DARI 1.2 JADI 1.05 (LEBIH BERANI)
-const PEMELIHARAAN=0.01;        
-const LOGISTIK_MIN=400,LOGISTIK_RANGE=4000; // JANGKAUAN LOGISTIK DIPERLUAS
+const PERTAHANAN_MIN=0.5;
+
+// [LOGIKA] Ekonomi dan perang
+const CADANGAN=0.10;                  // bagian kekuatan yang tetap di rumah
+const BONUS_BERTAHAN=1.2;
+const MARGIN_SERANG=1.05;             // margin serang ke faksi lain
+const MARGIN_NETRAL=1.1;              // [LOGIKA] margin serang ke netral, lebih berani
+const PEMELIHARAAN=0.01;              // 1% nilai kapal per hari (usulan 5% belum ditetapkan)
+const LOGISTIK_MIN=400,LOGISTIK_RANGE=4000;   // km
+const PATH_MAKS=8,JEDA_PARKIR=60;
+
+// [DATA] Waktu dan kapal (menit game)
 const MENIT_PER_HARI=1440,KECEPATAN_KM_MENIT=0.9;
 const PERSIAPAN_MIN=30,PERSIAPAN_RENTANG=30;
-const KECEPATAN_SPEED=[0,10,40,160,2880],LABEL_SPEED=['JEDA','1x','4x','16x','MAX'];
+const KECEPATAN_SPEED=[0,10,40,160,8640];
+const LABEL_SPEED=['JEDA','1x','4x','16x','MAX'];
 const FRAME_BUDGET_MS=8;
-const PATH_MAKS=8,JEDA_PARKIR=60;
 const KELAS=[
   {nama:'Fregat',poin:1,hari:1},{nama:'Kruiser',poin:4,hari:3},
   {nama:'Kapal perang',poin:12,hari:8},{nama:'Raksasa',poin:40,hari:20}
 ];
 const POIN_K=KELAS.map(k=>k.poin);
+
+// [RENDER]
 const BAKE_KM_PER_PX=8,BAKE_PX=Math.round(DUNIA_W/BAKE_KM_PER_PX),BAKE_JEDA_MS=400;
 const ALPHA_PUSAT=0.42,ALPHA_TEPI=0.06,NETRAL_ALPHA=0.05,REDUP_LAIN=0.2;
 const ALPHA_JALUR=0.20,ALPHA_JALUR_LINTAS=0.40,JALUR_MULAI_ZOOM=0.25,JALUR_PENUH_ZOOM=0.6;
@@ -52,19 +69,32 @@ const BINTANG_N=180,BINTANG_HZ=10,GRID_KM=250,GRID_ALPHA=0.12,GRID_MIN_PX=30,LUA
 // 2. STATUS
 // ==========================================
 let rafAktif=false,lastFrame=performance.now(),lastBake=0,bakeKotor=true,dtHalus=0.016;
-let speedIdx=1,tSim=0,heap=[],galat=0,galatPesan='';
-const rngSim=mulberry32(SEED+99);
+let speedIdx=1,tSim=0,heap=[],galat=0,galatPesan='',pesanSimpanan='';
+let rngSim=buatRng(SEED+99);
 const kamera={x:0,y:0,skala:SKALA_MIN},vel={x:0,y:0};
 let dipilih=-1,dipilihFaksi=-1,ptr=null;
 let bintang=[],sektor=[],simpul=[],tepiList=[],jalurList=[],seedAt=[],FAKSI=[];
 let log=[];
-
+let misiAktif=[],misiById=new Map(),nextMisiId=1,parkir=[];
 const arrBiasa=[],arrSorot=[],arrSama=[],arrBeda=[];
 
 // ==========================================
 // 3. UTILITAS
 // ==========================================
 function mulberry32(a){return function(){a|=0;a=a+0x6D2B79F5|0;let t=Math.imul(a^a>>>15,1|a);t=t+Math.imul(t^t>>>7,61|t)^t;return((t^t>>>14)>>>0)/4294967296;};}
+
+// Generator acak yang keadaannya bisa disimpan (r.s)
+function buatRng(a0){
+  const r={s:a0>>>0};
+  r.f=function(){
+    r.s=(r.s+0x6D2B79F5)|0;
+    let t=Math.imul(r.s^r.s>>>15,1|r.s);
+    t=(t+Math.imul(t^t>>>7,61|t))^t;
+    return((t^t>>>14)>>>0)/4294967296;
+  };
+  return r;
+}
+
 function hashKisi(x,y){let h=(x*374761393+y*668265263)|0;h=Math.imul(h^(h>>>13),1274126177);return((h^(h>>>16))>>>0)/4294967295;}
 function vnoise(x,y){
   const xi=Math.floor(x),yi=Math.floor(y),xf=x-xi,yf=y-yi;
@@ -73,12 +103,11 @@ function vnoise(x,y){
   return a+(b-a)*u+(c-a)*v+(a-b-c+d)*u*v;
 }
 function goyang(x,y){
-  return [(vnoise(x/JITTER_SKALA,y/JITTER_SKALA)-0.5)*2*JITTER_KM,
-          (vnoise((x+311)/JITTER_SKALA,(y+977)/JITTER_SKALA)-0.5)*2*JITTER_KM];
+  return[(vnoise(x/JITTER_SKALA,y/JITTER_SKALA)-0.5)*2*JITTER_KM,(vnoise((x+311)/JITTER_SKALA,(y+977)/JITTER_SKALA)-0.5)*2*JITTER_KM];
 }
 function clamp(v,a,b){return Math.max(a,Math.min(b,v));}
 function wrap(v,m){return((v%m)+m)%m;}
-function rgbaStr(rgb,a){return `rgba(${rgb[0]},${rgb[1]},${rgb[2]},${a})`;}
+function rgbaStr(rgb,a){return`rgba(${rgb[0]},${rgb[1]},${rgb[2]},${a})`;}
 function dalamKotak(p,k){return p.x>=k.x&&p.x<=k.x+k.w&&p.y>=k.y&&p.y<=k.y+k.h;}
 function posisi(e){const r=canvas.getBoundingClientRect();return{x:e.clientX-r.left,y:e.clientY-r.top};}
 function hslToRgb(h,s,l){
@@ -93,7 +122,15 @@ const poinArr=a=>a.reduce((s,v,k)=>s+v*POIN_K[k],0);
 const jumlahKapal=a=>a[0]+a[1]+a[2]+a[3];
 function tambah(a,b,s=1){for(let k=0;k<4;k++)a[k]+=b[k]*s;return a;}
 function ambilFrac(a,fr){const b=kosong();for(let k=0;k<4;k++){b[k]=a[k]*fr;a[k]-=b[k];}return b;}
+function parkirTambah(sek,pas,tanda){
+  if(sek<0||!parkir[sek])return;
+  const p=parkir[sek];
+  for(let k=0;k<4;k++)p[k]=Math.max(0,p[k]+tanda*pas[k]);
+}
 
+// ==========================================
+// 4. ANTREAN KEJADIAN (min-heap)
+// ==========================================
 function heapPush(ev){
   if(!Number.isFinite(ev.t)){galat++;galatPesan='waktu tidak valid';return;}
   heap.push(ev);
@@ -116,30 +153,34 @@ function heapPop(){
 }
 
 // ==========================================
-// 4. LATAR BINTANG
+// 5. MISI (armada yang sedang berjalan)
 // ==========================================
-function buatBintang(){
-  const r=mulberry32(4242);bintang=[];
-  for(let i=0;i<BINTANG_N;i++){
-    const d=0.15+r()*0.85;
-    bintang.push({x:r(),y:r(),d,r:0.4+d*1.1,vx:(r()-0.5)*4,vy:(r()-0.5)*4,ph:r()*Math.PI*2,sp:0.6+r()*1.4,base:0.35+r()*0.5});
-  }
+// [DATA] Misi disimpan di daftar global dan di daftar milik faksinya. Hapus dengan tukar-posisi.
+function tambahMisi(m){
+  m.batal=false;
+  m.ix=misiAktif.length;
+  misiAktif.push(m);
+  m.f.misi.push(m);
+  misiById.set(m.id,m);
 }
-function gambarBintang(){
-  const w=bgCanvas.width,h=bgCanvas.height;if(!w||!h)return;
-  const t=performance.now()/1000,ox=-kamera.x*kamera.skala,oy=-kamera.y*kamera.skala;
-  bgCtx.clearRect(0,0,w,h);
-  for(const s of bintang){
-    const x=wrap(s.x*w+s.vx*t+ox*s.d,w),y=wrap(s.y*h+s.vy*t+oy*s.d,h);
-    const a=s.base*(0.55+0.45*Math.sin(t*s.sp+s.ph));
-    bgCtx.fillStyle=`rgba(220,230,255,${a.toFixed(3)})`;
-    bgCtx.beginPath();bgCtx.arc(x,y,s.r,0,Math.PI*2);bgCtx.fill();
-  }
+function removeMisi(m){
+  if(misiAktif[m.ix]!==m){m.batal=true;return;}
+  m.batal=true;
+  const last=misiAktif.pop();
+  if(last!==m){misiAktif[m.ix]=last;last.ix=m.ix;}
+  misiById.delete(m.id);
+  m.f.misi=m.f.misi.filter(x=>x!==m);
 }
-setInterval(()=>{if(!document.hidden&&!(ptr&&ptr.moved)&&!sedangBergerak())gambarBintang();},1000/BINTANG_HZ);
+function selesai(m){removeMisi(m);}
+
+// Batalkan semua pasukan parkir di satu sektor (dipakai saat sektor direbut)
+function batalParkirDi(sek){
+  for(const x of misiAktif.slice())if(x.state==='parkir'&&x.sek===sek)removeMisi(x);
+  parkir[sek]=kosong();
+}
 
 // ==========================================
-// 5. SEKTOR, WILAYAH, JALUR
+// 6. SEKTOR, WILAYAH, JALUR
 // ==========================================
 function bangunSektor(){
   const rnd=mulberry32(SEED);sektor=[];seedAt=new Array(GRID_N*GRID_N).fill(-1);
@@ -155,7 +196,6 @@ function bangunSektor(){
     s.stasiun=hashKisi(s.gi*7+3,s.gj*13+5)>0.93;
   });
 }
-
 function potongSetengah(poli,nx,ny,c){
   const out=[];
   for(let k=0;k<poli.length;k++){
@@ -167,7 +207,6 @@ function potongSetengah(poli,nx,ny,c){
   }
   return out;
 }
-
 function bangunWilayah(){
   const simpulMap=new Map();simpul=[];
   const idSimpul=(x,y)=>{
@@ -217,11 +256,8 @@ function bangunWilayah(){
     }
     s.luas=Math.abs(sum)/2;s.bb=[minX,minY,maxX,maxY];
   }
-  for(const e of tepiList){
-    if(e.s.length===2){sektor[e.s[0]].nb.push(e.s[1]);sektor[e.s[1]].nb.push(e.s[0]);}
-  }
+  for(const e of tepiList)if(e.s.length===2){sektor[e.s[0]].nb.push(e.s[1]);sektor[e.s[1]].nb.push(e.s[0]);}
 }
-
 function bangunJalur(){
   jalurList=[];
   for(const e of tepiList){
@@ -232,14 +268,14 @@ function bangunJalur(){
 }
 
 // ==========================================
-// 6. FAKSI & ARKETIPE (SPESIALISASI)
+// 7. FAKSI
 // ==========================================
-const ARKETIPE = [
-  {nama:'Warlord',   agresi:0.9, hati:0.5, ekspansi:0.3, perluasan:0.6, logistik:0.6, ekonomi:0.4, ketahanan:0.5},
-  {nama:'Ekspansionis',agresi:0.3, hati:0.5, ekspansi:0.9, perluasan:0.9, logistik:0.5, ekonomi:0.6, ketahanan:0.4},
-  {nama:'Siput Baja',  agresi:0.2, hati:0.5, ekspansi:0.2, perluasan:0.3, logistik:0.3, ekonomi:0.6, ketahanan:0.9},
-  {nama:'Sindikat',    agresi:0.4, hati:0.7, ekspansi:0.5, perluasan:0.5, logistik:0.4, ekonomi:0.9, ketahanan:0.5},
-  {nama:'Laksamana',   agresi:0.6, hati:0.5, ekspansi:0.6, perluasan:0.7, logistik:0.9, ekonomi:0.5, ketahanan:0.5}
+const ARKETIPE=[
+  {nama:'Warlord',      agresi:0.9,hati:0.5,ekspansi:0.3,perluasan:0.6,logistik:0.6,ekonomi:0.4,ketahanan:0.5},
+  {nama:'Ekspansionis', agresi:0.3,hati:0.5,ekspansi:0.9,perluasan:0.9,logistik:0.5,ekonomi:0.6,ketahanan:0.4},
+  {nama:'Siput Baja',   agresi:0.2,hati:0.5,ekspansi:0.2,perluasan:0.3,logistik:0.3,ekonomi:0.6,ketahanan:0.9},
+  {nama:'Sindikat',     agresi:0.4,hati:0.7,ekspansi:0.5,perluasan:0.5,logistik:0.4,ekonomi:0.9,ketahanan:0.5},
+  {nama:'Laksamana',    agresi:0.6,hati:0.5,ekspansi:0.6,perluasan:0.7,logistik:0.9,ekonomi:0.5,ketahanan:0.5}
 ];
 
 function bangunFaksi(){
@@ -252,26 +288,21 @@ function bangunFaksi(){
     if(titik.some(t=>Math.hypot(sektor[t].x-s.x,sektor[t].y-s.y)<minD))continue;
     titik.push(i);
   }
-  FAKSI=[{id:0,nama:'Netral',rgb:[120,130,150],hidup:true,misi:[],milik:[],rumah:[0,0,0,0],intel:new Map()}];
+  FAKSI=[{id:0,nama:'Netral',rgb:[120,130,150],hidup:true,misi:[],milik:[],rumah:kosong(),intel:new Map()}];
   titik.forEach((idx,k)=>{
-    // Memilih Arketipe Dominan
-    const arch = ARKETIPE[Math.floor(rnd() * ARKETIPE.length)];
-    // Menambahkan sedikit variasi acak pada arketipe
-    const sifat = {
-      tipe: arch.nama,
-      agresi: clamp(arch.agresi + (rnd()-0.5)*0.1, 0.1, 1.0),
-      hati: clamp(arch.hati + (rnd()-0.5)*0.1, 0.1, 1.0),
-      ekspansi: clamp(arch.ekspansi + (rnd()-0.5)*0.1, 0.1, 1.0),
-      perluasan: clamp(arch.perluasan + (rnd()-0.5)*0.1, 0.1, 1.0),
-      logistik: clamp(arch.logistik + (rnd()-0.5)*0.1, 0.1, 1.0),
-      ekonomi: clamp(arch.ekonomi + (rnd()-0.5)*0.1, 0.1, 1.0),
-      ketahanan: clamp(arch.ketahanan + (rnd()-0.5)*0.1, 0.1, 1.0)
+    const arch=ARKETIPE[Math.floor(rnd()*ARKETIPE.length)];
+    const var_=()=>(rnd()-0.5)*0.1;
+    const sifat={
+      tipe:arch.nama,
+      agresi:clamp(arch.agresi+var_(),0.1,1),hati:clamp(arch.hati+var_(),0.1,1),
+      ekspansi:clamp(arch.ekspansi+var_(),0.1,1),perluasan:clamp(arch.perluasan+var_(),0.1,1),
+      logistik:clamp(arch.logistik+var_(),0.1,1),ekonomi:clamp(arch.ekonomi+var_(),0.1,1),
+      ketahanan:clamp(arch.ketahanan+var_(),0.1,1)
     };
-    
     const f={
-      id:k+1, nama:`Faksi ${k+1}`, rgb:hslToRgb((k*137.508)%360,0.65,0.6), markas:idx, hidup:true, sifat,
-      rumah:kosong(), poin:POIN_AWAL, sibuk:0, misi:[], intel:new Map(),
-      puncak:false, radius:40, milik:[], stasiunN:0
+      id:k+1,nama:`Faksi ${k+1}`,rgb:hslToRgb((k*137.508)%360,0.65,0.6),markas:idx,hidup:true,sifat,
+      rumah:kosong(),poin:POIN_AWAL,sibuk:0,misi:[],intel:new Map(),
+      puncak:false,menunggu:false,radius:40,milik:[],stasiunN:0
     };
     FAKSI.push(f);
     const s=sektor[idx];
@@ -290,35 +321,55 @@ function dikirimPoin(f){return f.misi.filter(m=>m.state!=='parkir').reduce((a,m)
 function bisaKirim(f){return Math.max(0,nilaiTotal(f)*(1-CADANGAN)-dikirimPoin(f));}
 function maksMisi(f){return 2+Math.round(3*f.sifat.agresi);}
 
-function pertahanan(s){return s.owner===0?1+2*s.medan:poinArr(s.g)*BONUS_BERTAHAN;}
-
+function pertahanan(s){
+  const nilai=s.owner===0?1+2*s.medan:poinArr(s.g)*BONUS_BERTAHAN;
+  return Math.max(PERTAHANAN_MIN,nilai);
+}
 function estimasi(f,s){
   const k=f.intel.get(s.idx);
-  if(k)return k.d;
-  return s.owner===0?1+2*s.medan:(3+6*s.medan)*BONUS_BERTAHAN;
+  if(k)return Math.max(PERTAHANAN_MIN,k.d);
+  return Math.max(PERTAHANAN_MIN,s.owner===0?1+2*s.medan:(3+6*s.medan)*BONUS_BERTAHAN);
 }
 
 // ==========================================
-// 7. GARNISUN, PEMBAGIAN, PINDAH MANUAL
+// 8. GARNISUN DAN PINDAH
 // ==========================================
+// Jumlah tetangga yang bukan milik faksi ini (perbatasan)
+function perbatasan(s,f){return s.nb.reduce((a,q)=>a+(sektor[q].owner!==f.id?1:0),0);}
+
+// [LOGIKA] Pembagian garnisun: perbatasan dan netral di sekitar diutamakan, sektor dalam mendapat sisa
 function bobot(s,f){
-  return (s.idx===f.markas?4:1)+(s.stasiun?2:0)+(s.nb.some(q=>sektor[q].owner!==f.id)?1.5:0);
+  const p=perbatasan(s,f);
+  const nNetral=s.nb.filter(q=>sektor[q].owner===0).length;
+  let w=0.2+p*1.5+nNetral*0.5;
+  if(s.idx===f.markas)w+=4;
+  if(s.stasiun)w+=2;
+  return w;
 }
 
 function placeRumah(f){
   const milik=f.milik.map(i=>sektor[i]);
   if(!milik.length)return;
-  for(const s of milik)if(s.g[0]<1&&f.rumah[0]>=1){f.rumah[0]-=1;s.g[0]+=1;}
+  // [LOGIKA] Minimum 1 fregat hanya untuk markas dan sektor perbatasan
+  for(const s of milik){
+    const perlu=s.idx===f.markas||perbatasan(s,f)>0;
+    if(perlu&&s.g[0]<1&&f.rumah[0]>=1){f.rumah[0]-=1;s.g[0]+=1;}
+  }
   const w=milik.map(s=>bobot(s,f)),W=w.reduce((a,b)=>a+b,0);
   milik.forEach((s,i)=>tambah(s.g,f.rumah,w[i]/W));
   f.rumah=kosong();
 }
 
+// [LOGIKA] Rute hanya lewat wilayah sendiri, kecuali titik tujuan
 function cariRute(n,f){
   const par=new Map([[n,-1]]);let depan=[n];
   for(let d=0;d<PATH_MAKS&&depan.length;d++){
     const nxt=[];
-    for(const x of depan)for(const y of sektor[x].nb){if(!par.has(y)){par.set(y,x);nxt.push(y);}}
+    for(const x of depan)for(const y of sektor[x].nb){
+      if(par.has(y))continue;
+      if(y!==n&&sektor[y].owner!==f.id)continue;
+      par.set(y,x);nxt.push(y);
+    }
     depan=nxt;
   }
   const hasil=new Map();
@@ -329,10 +380,12 @@ function cariRute(n,f){
   }
   return hasil;
 }
+
+// [DATA] Garnisun bebas = garnisun sektor dikurangi pasukan yang sedang parkir di sana (O(1))
 function garnisunBebas(s){
-  const b=s.g.slice();
-  for(const F of FAKSI)for(const x of F.misi)if(x.state==='parkir'&&x.sek===s.idx)for(let k=0;k<4;k++)b[k]-=x.pasukan[k];
-  return b.map(v=>Math.max(0,v));
+  const b=kosong();
+  for(let k=0;k<4;k++)b[k]=Math.max(0,s.g[k]-parkir[s.idx][k]);
+  return b;
 }
 function ambilDariSektor(s,poinMinta){
   const b=garnisunBebas(s),p=poinArr(b),out=kosong();
@@ -341,6 +394,7 @@ function ambilDariSektor(s,poinMinta){
   for(let k=0;k<4;k++){out[k]=b[k]*fr;s.g[k]=Math.max(0,s.g[k]-out[k]);}
   return out;
 }
+
 function aturPindah(f,t){
   const milik=f.milik.map(i=>sektor[i]);
   if(milik.length<2)return false;
@@ -359,8 +413,8 @@ function aturPindah(f,t){
   if(asal.g[k]<1)return false;
   asal.g[k]-=1;
   const kirim=kosong();kirim[k]=1;
-  const m={jenis:'pindah',state:'siap',f,path,hop:0,pasukan:kirim,sek:-1,dari:asal.idx,ke:path[1],mulai:t,tiba:t,batal:false};
-  f.misi.push(m);
+  const m={id:nextMisiId++,jenis:'pindah',state:'siap',f,path,hop:0,pasukan:kirim,sek:-1,dari:asal.idx,ke:path[1],mulai:t,tiba:t};
+  tambahMisi(m);
   departHop(m,t);
   return true;
 }
@@ -373,13 +427,13 @@ function departHop(m,t){
 }
 
 // ==========================================
-// 8. EKONOMI, GALANGAN, SERANG
+// 9. EKONOMI, GALANGAN, SERANG
 // ==========================================
 function pilihKelas(f){
   const a=f.sifat.agresi,h=f.sifat.hati,e=f.sifat.ekonomi;
   const w=[1+2*a,0.5+a,0.3+1.5*h,0.05+h*e];
   const tot=w.reduce((x,y)=>x+y,0);
-  let r=rngSim()*tot,k=0;
+  let r=rngSim.f()*tot,k=0;
   while(k<w.length-1&&r>=w[k]){r-=w[k];k++;}
   if(KELAS[k].poin<=f.poin)return k;
   if(KELAS[0].poin<=f.poin)return 0;
@@ -390,35 +444,43 @@ function rencanaSerang(f,n,butuh,sisa){
   const rute=cariRute(n,f);
   const sumber=[...rute.entries()].sort((a,b)=>poinArr(garnisunBebas(sektor[b[0]]))-poinArr(garnisunBebas(sektor[a[0]])));
   const rencana=[];let kumpul=0;
-  for(const [o,path] of sumber){
+  for(const[o,path]of sumber){
     if(kumpul>=butuh)break;
     const amt=Math.min(butuh-kumpul,sisa-kumpul,poinArr(garnisunBebas(sektor[o]))*0.9);
     if(amt<=0)continue;
     rencana.push({o,path,amt});kumpul+=amt;
   }
-  return kumpul>=butuh-1e-9?rencana:null;
+  return(kumpul>=butuh-1e-9&&rencana.length>0)?rencana:null;
 }
+
+// [LOGIKA] Sasaran: status puncak hanya bila tidak ada tujuan dalam jangkauan.
+// Bila tujuan ada tetapi pasukan belum cukup, faksi berstatus "menunggu".
 function pilihSasaran(f,t){
   const m=sektor[f.markas],maks=LOGISTIK_MIN+LOGISTIK_RANGE*f.sifat.logistik;
-  const sisa=bisaKirim(f);
-  if(sisa<=0)return false;
-  const kand=new Set();
+
+  const kand=new Set();let adaTujuan=false;
   for(const o of f.milik){
-    if(poinArr(garnisunBebas(sektor[o]))<=0.5)continue;
+    const sumberOk=poinArr(garnisunBebas(sektor[o]))>1e-6;
     for(const n of sektor[o].nb){
       const ns=sektor[n];
       if(ns.owner===f.id||Math.hypot(ns.x-m.x,ns.y-m.y)>maks)continue;
-      kand.add(n);
+      adaTujuan=true;
+      if(sumberOk)kand.add(n);
     }
   }
-  f.puncak=kand.size===0;
+  f.puncak=!adaTujuan;
+
+  const sisa=bisaKirim(f);
+  if(sisa<=0||kand.size===0){f.menunggu=!f.puncak;return false;}
+
   const calon=[];
   for(const n of kand){
-    const ns=sektor[n],butuh=estimasi(f,ns)*MARGIN_SERANG;
+    const ns=sektor[n];
+    const butuh=estimasi(f,ns)*(ns.owner===0?MARGIN_NETRAL:MARGIN_SERANG);
     const bers=ns.nb.filter(q=>sektor[q].owner===f.id).length;
     const nilai=(0.5+ns.medan+(ns.stasiun?0.5:0))*(ns.owner===0?1+f.sifat.perluasan:1)*(1+0.2*bers*f.sifat.perluasan);
     const pengali=ns.owner===0?1+f.sifat.ekspansi:0.5+f.sifat.agresi;
-    calon.push({n,butuh,skor:nilai*pengali/butuh*(0.9+0.2*rngSim())});
+    calon.push({n,butuh,skor:nilai*pengali/butuh*(0.9+0.2*rngSim.f())});
   }
   calon.sort((a,b)=>b.skor-a.skor);
   for(const c of calon.slice(0,5)){
@@ -426,12 +488,14 @@ function pilihSasaran(f,t){
     if(!rencana)continue;
     for(const r of rencana){
       const pasukan=ambilDariSektor(sektor[r.o],r.amt);
-      const mis={jenis:'serang',state:'siap',f,path:r.path,hop:0,pasukan,sek:-1,dari:r.o,ke:r.path[1],mulai:t,tiba:t,batal:false};
-      f.misi.push(mis);
+      const mis={id:nextMisiId++,jenis:'serang',state:'siap',f,path:r.path,hop:0,pasukan,sek:-1,dari:r.o,ke:r.path[1],mulai:t,tiba:t};
+      tambahMisi(mis);
       heapPush({t:t+PERSIAPAN_MIN+PERSIAPAN_RENTANG*(1-f.sifat.ekspansi),k:'S',m:mis});
     }
+    f.menunggu=false;
     return true;
   }
+  f.menunggu=!f.puncak;
   return false;
 }
 
@@ -442,7 +506,7 @@ function setOwner(s,id){
   }
   s.owner=id;
   if(id>0){FAKSI[id].milik.push(s.idx);if(s.stasiun)FAKSI[id].stasiunN++;}
-  bakeKotor=true; 
+  bakeKotor=true;
 }
 
 function harianFaksi(f,t){
@@ -452,16 +516,12 @@ function harianFaksi(f,t){
   for(const i of f.milik)R=Math.max(R,Math.hypot(sektor[i].x-m.x,sektor[i].y-m.y));
   f.radius=R;
   f.poin=Math.max(0,f.poin-PEMELIHARAAN*nilaiTotal(f));
-  
-  // MEKANIK REPAIR KAPAL
-  const healRate = 0.05 + 0.1 * f.sifat.ekonomi; 
-  for(const i of f.milik) {
-      const s = sektor[i];
-      for(let k=0; k<4; k++) {
-          if(s.g[k] > 0 && s.g[k] % 1 !== 0) {
-              s.g[k] = Math.min(Math.ceil(s.g[k]), s.g[k] + healRate);
-          }
-      }
+
+  // Perbaikan kapal rusak sebagian (pecahan) di sektor milik sendiri
+  const healRate=0.05+0.1*f.sifat.ekonomi;
+  for(const i of f.milik){
+    const s=sektor[i];
+    for(let k=0;k<4;k++)if(s.g[k]>0&&s.g[k]%1!==0)s.g[k]=Math.min(Math.ceil(s.g[k]),s.g[k]+healRate);
   }
 
   placeRumah(f);
@@ -471,7 +531,6 @@ function harianFaksi(f,t){
     f.poin-=KELAS[k].poin;f.sibuk++;
     heapPush({t:t+KELAS[k].hari*MENIT_PER_HARI*(1.2-0.4*f.sifat.ekonomi),k:'B',f,d:k});
   }
-  // PERANG TOTAL: Kuota serangan & pindah diperbanyak
   for(let i=0;i<5;i++)if(!aturPindah(f,t))break;
   for(let i=0;i<10;i++)if(!pilihSasaran(f,t))break;
 }
@@ -480,6 +539,8 @@ function saatKeluar(m,t){
   if(m.batal)return;
   const s=sektor[m.sek];
   for(let k=0;k<4;k++)s.g[k]=Math.max(0,s.g[k]-m.pasukan[k]);
+  parkirTambah(m.sek,m.pasukan,-1);
+  m.sek=-1;
   departHop(m,t);
 }
 
@@ -488,7 +549,6 @@ function logKejadian(teks){
   if(log.length>8)log.length=8;
 }
 
-function selesai(m){m.state='selesai';m.f.misi=m.f.misi.filter(x=>x!==m);}
 function saatTiba(m,t){
   if(m.batal)return;
   const f=m.f;
@@ -498,6 +558,7 @@ function saatTiba(m,t){
   if(m.hop===m.path.length-1){tambah(s.g,m.pasukan);selesai(m);return;}
   tambah(s.g,m.pasukan);
   m.state='parkir';m.sek=s.idx;
+  parkirTambah(s.idx,m.pasukan,1);
   heapPush({t:t+JEDA_PARKIR,k:'K',m});
 }
 
@@ -507,7 +568,7 @@ function serangSektor(m,s){
   if(A>D){
     const hasil=kosong();
     tambah(hasil,m.pasukan,1-(D>0?D/A:0));
-    if(po>0)for(const F of FAKSI)F.misi=F.misi.filter(x=>{if(x.state==='parkir'&&x.sek===s.idx){x.batal=true;return false;}return true;});
+    if(po>0)batalParkirDi(s.idx);
     setOwner(s,f.id);s.g=hasil;
     if(po>0){
       logKejadian(`${f.nama} merebut ${s.id} dari ${FAKSI[po].nama}`);
@@ -523,41 +584,55 @@ function serangSektor(m,s){
   }else logKejadian(`${f.nama} kalah di ${s.id}`);
   return false;
 }
+
+// [DATA] Pasukan parkir ikut terpotong; jumlah parkir diperbarui sesuai yang terbuang
 function potongGarnisun(s,fr){
   ambilFrac(s.g,fr);
-  for(const F of FAKSI)for(const x of F.misi)if(x.state==='parkir'&&x.sek===s.idx)ambilFrac(x.pasukan,fr);
+  for(const x of misiAktif)if(x.state==='parkir'&&x.sek===s.idx){
+    const ambil=ambilFrac(x.pasukan,fr);
+    parkirTambah(s.idx,ambil,-1);
+  }
 }
 
 function eliminasi(po){
   const F=FAKSI[po];
   F.hidup=false;
-  for(const m of F.misi)m.batal=true;
+  for(const m of F.misi.slice())removeMisi(m);
   F.misi=[];F.rumah=kosong();F.milik=[];
-  for(const s of sektor){
-    if(s.owner===po){setOwner(s,0);s.g=kosong();}
-  }
+  for(const s of sektor)if(s.owner===po){setOwner(s,0);s.g=kosong();}
+  for(const s of sektor)parkir[s.idx]=kosong();
+  for(const m of misiAktif)if(m.state==='parkir'&&m.sek>=0)parkirTambah(m.sek,m.pasukan,1);
   logKejadian(`${F.nama} tersingkir`);
   bakeKotor=true;
 }
 
 function prosesEvent(ev){
   try{
-    if(ev.k==='F'){if(ev.f.hidup)heapPush({t:ev.t+MENIT_PER_HARI,k:'F',f:ev.f});harianFaksi(ev.f,ev.t);}
-    else if(ev.k==='S'){departHop(ev.m,ev.t);}
+    if(ev.k==='F'){
+      if(ev.f.hidup)heapPush({t:ev.t+MENIT_PER_HARI,k:'F',f:ev.f});
+      harianFaksi(ev.f,ev.t);
+    }
+    else if(ev.k==='S'){if(!ev.m.batal&&ev.m.f.hidup)departHop(ev.m,ev.t);}
     else if(ev.k==='T'){saatTiba(ev.m,ev.t);}
     else if(ev.k==='K'){saatKeluar(ev.m,ev.t);}
     else if(ev.k==='B'){ev.f.sibuk--;if(ev.f.hidup)ev.f.rumah[ev.d]+=1;}
   }catch(err){galat++;galatPesan=`${ev.k}: ${err&&err.message?err.message:err}`;console.error(err);}
 }
 
+// [LOGIKA] Waktu hanya naik sampai kejadian terakhir yang benar-benar diproses
 function majuWaktu(dtDetik){
   const kec=KECEPATAN_SPEED[speedIdx];
   if(kec===0)return;
   const mulai=performance.now();
   const batas=tSim+kec*dtDetik;
+  let terakhir=tSim;
   while(heap.length&&heap[0].t<=batas){
-    if(performance.now()-mulai>FRAME_BUDGET_MS)break;
+    if(performance.now()-mulai>FRAME_BUDGET_MS){
+      tSim=Math.max(tSim,terakhir);
+      return;
+    }
     const ev=heapPop();
+    terakhir=ev.t;
     tSim=Math.max(tSim,ev.t);
     prosesEvent(ev);
   }
@@ -565,7 +640,117 @@ function majuWaktu(dtDetik){
 }
 
 // ==========================================
-// 9. KAMERA DAN INPUT
+// 10. SIMPAN DAN MUAT (localStorage)
+// ==========================================
+const r3=v=>Math.round(v*1000)/1000;
+
+function bangunSimpanan(){
+  return{
+    versi:VERSI_SIMPAN,seed:SEED,n:sektor.length,
+    tSim,speedIdx,rng:rngSim.s,nextMisiId,
+    kamera:{x:kamera.x,y:kamera.y,skala:kamera.skala},
+    own:sektor.map(s=>s.owner),
+    g:sektor.map(s=>s.g.map(r3)),
+    faksi:FAKSI.slice(1).map(f=>({
+      id:f.id,hidup:f.hidup,markas:f.markas,sifat:f.sifat,
+      rumah:f.rumah.map(r3),poin:r3(f.poin),sibuk:f.sibuk,
+      puncak:f.puncak,radius:f.radius,intel:[...f.intel.entries()]
+    })),
+    misi:misiAktif.map(m=>({
+      id:m.id,fid:m.f.id,jenis:m.jenis,state:m.state,path:m.path,hop:m.hop,
+      pasukan:m.pasukan.map(r3),sek:m.sek,dari:m.dari,ke:m.ke,mulai:m.mulai,tiba:m.tiba
+    })),
+    heap:heap.map(ev=>({
+      t:ev.t,k:ev.k,fid:ev.f?ev.f.id:null,mid:ev.m?ev.m.id:null,d:ev.d===undefined?null:ev.d
+    })),
+    log
+  };
+}
+
+function simpan(){
+  if(!sektor.length||!FAKSI.length)return;
+  try{
+    const s=JSON.stringify(bangunSimpanan());
+    if(s.length>SIMPAN_MAKS_CHAR)return;
+    localStorage.setItem(KUNCI_SIMPAN,s);
+  }catch(e){}
+}
+
+function muatSimpanan(){
+  let raw=null;
+  try{raw=localStorage.getItem(KUNCI_SIMPAN);}catch(e){return false;}
+  if(!raw)return false;
+  let d=null;
+  try{d=JSON.parse(raw);}catch(e){d=null;}
+  if(!d||d.versi!==VERSI_SIMPAN||d.seed!==SEED||d.n!==sektor.length){
+    try{localStorage.removeItem(KUNCI_SIMPAN);}catch(e){}
+    pesanSimpanan='Simpanan lama tidak cocok, dunia baru dibuat';
+    return false;
+  }
+  tSim=d.tSim;speedIdx=d.speedIdx;rngSim.s=d.rng;nextMisiId=d.nextMisiId;
+  kamera.x=d.kamera.x;kamera.y=d.kamera.y;kamera.skala=d.kamera.skala;
+
+  sektor.forEach((s,i)=>{s.owner=d.own[i];s.g=d.g[i].slice();});
+
+  FAKSI=[{id:0,nama:'Netral',rgb:[120,130,150],hidup:true,misi:[],milik:[],rumah:kosong(),intel:new Map()}];
+  for(const fd of d.faksi){
+    const k=fd.id-1;
+    FAKSI.push({
+      id:fd.id,nama:`Faksi ${fd.id}`,rgb:hslToRgb((k*137.508)%360,0.65,0.6),
+      markas:fd.markas,hidup:fd.hidup,sifat:fd.sifat,rumah:fd.rumah.slice(),
+      poin:fd.poin,sibuk:fd.sibuk,misi:[],intel:new Map(fd.intel),
+      puncak:fd.puncak,menunggu:false,radius:fd.radius,milik:[],stasiunN:0
+    });
+  }
+  for(const s of sektor)if(s.owner>0){FAKSI[s.owner].milik.push(s.idx);if(s.stasiun)FAKSI[s.owner].stasiunN++;}
+
+  misiAktif=[];misiById=new Map();
+  for(const md of d.misi){
+    const f=FAKSI[md.fid];if(!f||!f.hidup)continue;
+    tambahMisi({id:md.id,f,jenis:md.jenis,state:md.state,path:md.path,hop:md.hop,
+      pasukan:md.pasukan.slice(),sek:md.sek,dari:md.dari,ke:md.ke,mulai:md.mulai,tiba:md.tiba});
+  }
+  parkir=sektor.map(()=>kosong());
+  for(const m of misiAktif)if(m.state==='parkir'&&m.sek>=0)parkirTambah(m.sek,m.pasukan,1);
+
+  heap=[];
+  for(const ev of d.heap){
+    const f=ev.fid!=null?FAKSI[ev.fid]:null;
+    const m=ev.mid!=null?misiById.get(ev.mid):null;
+    if(ev.mid!=null&&!m)continue;
+    if(ev.fid!=null&&!f)continue;
+    heap.push({t:ev.t,k:ev.k,f,m,d:ev.d==null?undefined:ev.d});
+  }
+  heap.sort((a,b)=>a.t-b.t);
+  log=d.log||[];
+  return true;
+}
+
+// Membuat dunia dari awal, atau memuat simpanan bila ada
+function mulaiDunia(pakaiSimpanan){
+  heap=[];misiAktif=[];misiById=new Map();nextMisiId=1;log=[];tSim=0;pesanSimpanan='';
+  bangunSektor();
+  bangunWilayah();
+  parkir=sektor.map(()=>kosong());
+  let dimuat=false;
+  if(pakaiSimpanan)dimuat=muatSimpanan();
+  if(!dimuat){
+    rngSim=buatRng(SEED+99);
+    kamera.x=0;kamera.y=0;kamera.skala=SKALA_MIN;
+    bangunFaksi();
+    for(const s of sektor)if(s.owner>0){FAKSI[s.owner].milik.push(s.idx);if(s.stasiun)FAKSI[s.owner].stasiunN++;}
+    const LANGKAH=MENIT_PER_HARI/(FAKSI.length-1);
+    FAKSI.forEach((f,i)=>{if(i>0)heapPush({t:i*LANGKAH,k:'F',f});});
+    logKejadian('Dunia baru dibuat');
+  }else logKejadian('Simpanan dimuat');
+  if(pesanSimpanan)logKejadian(pesanSimpanan);
+  bangunJalur();
+  bakeWilayah();bakeKotor=false;lastBake=performance.now();
+  minta();
+}
+
+// ==========================================
+// 11. KAMERA DAN INPUT
 // ==========================================
 function fadeSektor(){return clamp((kamera.skala-SKALA_FADE_MULAI)/(SKALA_FADE_SELESAI-SKALA_FADE_MULAI),0,1);}
 function toSX(xKm){return(xKm-kamera.x)*kamera.skala+canvas.width/2;}
@@ -622,6 +807,7 @@ function tombolKanan(){
     {id:'-',x:canvas.width-54,y:canvas.height/2+10,w:44,h:44,t:'−'}
   ];
 }
+function tombolReset(){return{id:'reset',x:canvas.width-86,y:48,w:76,h:28,t:'RESET'};}
 function tombolSpeedAt(i){return{id:'speed'+i,x:8+i*62,y:canvas.height-40,w:56,h:30,t:LABEL_SPEED[i]};}
 function didalamPoli(poli,x,y){
   let dalam=false;
@@ -649,6 +835,14 @@ function tap(p){
     kamera.x=0;kamera.y=0;kamera.skala=SKALA_MIN;vel.x=0;vel.y=0;
     dipilih=-1;dipilihFaksi=-1;return minta();
   }
+  if(dalamKotak(p,tombolReset())){
+    if(window.confirm('Mulai ulang dari awal? Simpanan akan dihapus.')){
+      try{localStorage.removeItem(KUNCI_SIMPAN);}catch(e){}
+      dipilih=-1;dipilihFaksi=-1;vel.x=0;vel.y=0;
+      mulaiDunia(false);
+    }
+    return minta();
+  }
   for(let i=0;i<LABEL_SPEED.length;i++){
     if(dalamKotak(p,tombolSpeedAt(i))){speedIdx=i;return minta();}
   }
@@ -666,7 +860,6 @@ function tap(p){
   else if(i>=0){const o=sektor[i].owner;dipilih=-1;dipilihFaksi=(o>0&&o!==dipilihFaksi)?o:-1;}
   minta();
 }
-
 function resize(){
   canvas.width=window.innerWidth;canvas.height=window.innerHeight;
   bgCanvas.width=window.innerWidth;bgCanvas.height=window.innerHeight;
@@ -708,7 +901,7 @@ canvas.addEventListener('pointerup',e=>{
 canvas.addEventListener('pointercancel',()=>{ptr=null;minta();});
 
 // ==========================================
-// 10. GAMBAR
+// 12. GAMBAR
 // ==========================================
 function batasLayar(){return{x0:dariSX(0),x1:dariSX(canvas.width),y0:dariSY(0),y1:dariSY(canvas.height)};}
 function bbDalam(bb,v){return bb[2]>=v.x0&&bb[0]<=v.x1&&bb[3]>=v.y0&&bb[1]<=v.y1;}
@@ -771,7 +964,7 @@ function strokeSimpul(list){
   ctx.stroke();
 }
 function gambarBatas(){
-  arrBiasa.length = 0; arrSorot.length = 0;
+  arrBiasa.length=0;arrSorot.length=0;
   const v=batasLayar();
   for(const e of tepiList){
     const a=simpul[e.a],b=simpul[e.b];
@@ -795,7 +988,7 @@ function strokeGaris(list){
 function gambarJalur(sA){
   const sJalur=Math.max(sA,clamp((kamera.skala-JALUR_MULAI_ZOOM)/(JALUR_PENUH_ZOOM-JALUR_MULAI_ZOOM),0,1));
   if(sJalur<0.01)return;
-  arrSama.length = 0; arrBeda.length = 0;
+  arrSama.length=0;arrBeda.length=0;
   const v=batasLayar();
   for(const j of jalurList){
     if(j.maxX<v.x0||j.minX>v.x1||j.maxY<v.y0||j.minY>v.y1)continue;
@@ -813,10 +1006,48 @@ function gambarTitikSektor(sA){
     ctx.fillStyle=rgbaStr(FAKSI[s.owner].rgb,1);
     ctx.fillRect(toSX(s.x)-1.5,toSY(s.y)-1.5,3,3);
   }
-  if(dipilih>=0){
-    const s=sektor[dipilih];
-    ctx.strokeStyle='#fde68a';ctx.lineWidth=2;
-    ctx.beginPath();ctx.arc(toSX(s.x),toSY(s.y),9,0,Math.PI*2);ctx.stroke();
+  ctx.globalAlpha=1;
+}
+function gambarSorotFaksi(){
+  if(dipilihFaksi<=0||!FAKSI[dipilihFaksi].hidup)return;
+  const f=FAKSI[dipilihFaksi],v=batasLayar();
+  ctx.fillStyle=rgbaStr(f.rgb,0.35);
+  for(const i of f.milik){
+    const s=sektor[i];if(!bbDalam(s.bb,v))continue;
+    ctx.beginPath();jalurPoli(s.poli);ctx.fill();
+  }
+}
+function gambarSorotSektor(sA){
+  if(dipilih<0||sA<0.01)return;
+  const s=sektor[dipilih];
+  ctx.globalAlpha=sA;
+  ctx.fillStyle='rgba(253,224,71,0.25)';
+  ctx.beginPath();jalurPoli(s.poli);ctx.fill();
+  ctx.strokeStyle='#fde68a';ctx.lineWidth=2;
+  ctx.beginPath();jalurPoli(s.poli);ctx.stroke();
+  ctx.globalAlpha=1;
+}
+function gambarRute(){
+  ctx.setLineDash([4,4]);ctx.lineWidth=1;
+  for(const f of FAKSI){
+    if(f.id===0||!f.hidup)continue;
+    for(const m of f.misi){
+      if(m.state!=='jalan')continue;
+      const a=sektor[m.dari],b=sektor[m.ke];
+      ctx.strokeStyle=rgbaStr(f.rgb,0.55);
+      ctx.beginPath();ctx.moveTo(toSX(a.x),toSY(a.y));ctx.lineTo(toSX(b.x),toSY(b.y));ctx.stroke();
+    }
+  }
+  ctx.setLineDash([]);
+}
+function gambarGarnisun(sA){
+  if(sA<0.5||kamera.skala<1.2)return;
+  const v=batasLayar();
+  ctx.globalAlpha=sA;ctx.font='9px monospace';ctx.textAlign='center';ctx.textBaseline='middle';ctx.fillStyle='#ffffff';
+  for(const s of sektor){
+    if(s.owner===0||!bbDalam(s.bb,v))continue;
+    const n=Math.ceil(jumlahKapal(s.g)-0.001);
+    if(n>0)ctx.fillText(String(n),toSX(s.x),toSY(s.y));
   }
   ctx.globalAlpha=1;
 }
@@ -858,63 +1089,22 @@ function gambarArmada(){
     }
   }
 }
-function gambarSorotFaksi(){
-  if(dipilihFaksi<=0||!FAKSI[dipilihFaksi].hidup)return;
-  const f=FAKSI[dipilihFaksi],v=batasLayar();
-  ctx.fillStyle=rgbaStr(f.rgb,0.35);
-  for(const i of f.milik){
-    const s=sektor[i];if(!bbDalam(s.bb,v))continue;
-    ctx.beginPath();jalurPoli(s.poli);ctx.fill();
-  }
-}
-function gambarSorotSektor(sA){
-  if(dipilih<0||sA<0.01)return;
-  const s=sektor[dipilih];
-  ctx.globalAlpha=sA;
-  ctx.fillStyle='rgba(253,224,71,0.25)';
-  ctx.beginPath();jalurPoli(s.poli);ctx.fill();
-  ctx.strokeStyle='#fde68a';ctx.lineWidth=2;
-  ctx.beginPath();jalurPoli(s.poli);ctx.stroke();
-  ctx.globalAlpha=1;
-}
-function gambarRute(){
-  ctx.setLineDash([4,4]);ctx.lineWidth=1;
-  for(const f of FAKSI){
-    if(f.id===0||!f.hidup)continue;
-    for(const m of f.misi){
-      if(m.state!=='jalan')continue;
-      const a=sektor[m.dari],b=sektor[m.ke];
-      ctx.strokeStyle=rgbaStr(f.rgb,0.55);
-      ctx.beginPath();ctx.moveTo(toSX(a.x),toSY(a.y));ctx.lineTo(toSX(b.x),toSY(b.y));ctx.stroke();
-    }
-  }
-  ctx.setLineDash([]);
-}
-function gambarGarnisun(sA){
-  if(sA<0.5 || kamera.skala < 1.2)return; 
-  const v=batasLayar();
-  ctx.globalAlpha=sA;ctx.font='9px monospace';ctx.textAlign='center';ctx.textBaseline='middle';ctx.fillStyle='#ffffff';
-  for(const s of sektor){
-    if(s.owner===0||!bbDalam(s.bb,v))continue;
-    const n = Math.ceil(jumlahKapal(s.g) - 0.001); 
-    if(n>0)ctx.fillText(String(n),toSX(s.x),toSY(s.y));
-  }
-  ctx.globalAlpha=1;
-}
 function kotakTeks(x,y,w,h){
   ctx.fillStyle='rgba(0,0,0,0.75)';ctx.fillRect(x,y,w,h);
   ctx.strokeStyle='#fde68a';ctx.lineWidth=1;ctx.strokeRect(x+0.5,y+0.5,w-1,h-1);
 }
-let panelCache={at:-1e9,hidup:0,netral:0,kapal:0};
+let panelCache={at:-1e9,hidup:0,netral:0,kapal:0,terbanyak:{n:0,nama:'-'}};
 function gambarPanel(){
   if(performance.now()-panelCache.at>1000){
-    let hidup=0,netral=0,kapal=0;
-    let terbanyak={n:0,nama:'-'};
-    for(const f of FAKSI)if(f.id>0&&f.hidup){const j=jumlahKapal(kelasTotal(f));hidup++;kapal+=j;if(j>terbanyak.n)terbanyak={n:j,nama:f.nama};}
+    let hidup=0,netral=0,kapal=0,terbanyak={n:0,nama:'-'};
+    for(const f of FAKSI)if(f.id>0&&f.hidup){
+      const j=jumlahKapal(kelasTotal(f));hidup++;kapal+=j;
+      if(j>terbanyak.n)terbanyak={n:j,nama:f.nama};
+    }
     for(const s of sektor)if(s.owner===0)netral++;
     panelCache={at:performance.now(),hidup,netral,kapal,terbanyak};
   }
-  const {hidup,netral,kapal,terbanyak}=panelCache;
+  const{hidup,netral,kapal,terbanyak}=panelCache;
   const hari=Math.floor(tSim/MENIT_PER_HARI)+1;
   const jam=String(Math.floor((tSim%MENIT_PER_HARI)/60)).padStart(2,'0');
   const menit=String(Math.floor(tSim%60)).padStart(2,'0');
@@ -931,20 +1121,21 @@ function gambarInfo(){
   let baris=null,judul='',warna=[253,224,71];
   if(dipilihFaksi>0&&FAKSI[dipilihFaksi].hidup){
     const f=FAKSI[dipilihFaksi],k=kelasTotal(f);
-    judul = `${f.nama} [${f.sifat.tipe}]`; // MENAMPILKAN ARKETIPE
+    const status=f.puncak?'puncak':(f.menunggu?'menunggu':'aktif');
+    judul=`${f.nama} [${f.sifat.tipe}]`;
     warna=f.rgb;
     baris=[
       `Markas ${sektor[f.markas].id}   Sektor ${f.milik.length}   Intel ${f.intel.size}`,
       `Poin ${f.poin.toFixed(1)}   Kekuatan ${poinArr(k).toFixed(0)}   Galangan ${f.sibuk}/${1+f.stasiunN}`,
       `Kapal F${Math.ceil(k[0])} K${Math.ceil(k[1])} KP${Math.ceil(k[2])} R${Math.ceil(k[3])}`,
-      `Serang ${f.misi.filter(m=>m.jenis==='serang').length}   Pindah ${f.misi.filter(m=>m.jenis==='pindah').length}   ${f.puncak?'puncak':''}`,
+      `Serang ${f.misi.filter(m=>m.jenis==='serang').length}   Pindah ${f.misi.filter(m=>m.jenis==='pindah').length}   Status: ${status}`,
       `Agresi ${f.sifat.agresi.toFixed(2)} Hati ${f.sifat.hati.toFixed(2)} Ekspansi ${f.sifat.ekspansi.toFixed(2)}`,
       `Perluasan ${f.sifat.perluasan.toFixed(2)} Logistik ${f.sifat.logistik.toFixed(2)} Ekonomi ${f.sifat.ekonomi.toFixed(2)} Tahan ${f.sifat.ketahanan.toFixed(2)}`
     ];
   }else if(dipilih>=0){
     const s=sektor[dipilih],f=FAKSI[s.owner],g=s.g;
     judul=`${s.id}  (${f.nama})`;
-    const totalUnit = Math.ceil(jumlahKapal(g) - 0.001);
+    const totalUnit=Math.ceil(jumlahKapal(g)-0.001);
     baris=[
       `Medan ${s.medan.toFixed(2)}   Stasiun ${s.stasiun?'ada':'tidak'}   Luas ${s.luas.toFixed(0)} km²`,
       `Pertahanan ${pertahanan(s).toFixed(1)}   Kekuatan: ${poinArr(g).toFixed(1)} Poin`,
@@ -979,11 +1170,12 @@ function gambar(){
   gambarSorotFaksi();gambarSorotSektor(sA);gambarGarnisun(sA);gambarRute();
   gambarMarkas();gambarArmada();gambarPanel();gambarInfo();
   for(const b of tombolKanan())gambarTombol(b,false);
+  gambarTombol(tombolReset(),false);
   for(let i=0;i<LABEL_SPEED.length;i++)gambarTombol(tombolSpeedAt(i),i===speedIdx);
 }
 
 // ==========================================
-// 11. LOOP
+// 13. LOOP
 // ==========================================
 function frame(now){
   rafAktif=false;
@@ -1000,19 +1192,37 @@ function frame(now){
 }
 
 // ==========================================
-// 12. MULAI
+// 14. LATAR BINTANG
+// ==========================================
+function buatBintang(){
+  const r=mulberry32(4242);bintang=[];
+  for(let i=0;i<BINTANG_N;i++){
+    const d=0.15+r()*0.85;
+    bintang.push({x:r(),y:r(),d,r:0.4+d*1.1,vx:(r()-0.5)*4,vy:(r()-0.5)*4,ph:r()*Math.PI*2,sp:0.6+r()*1.4,base:0.35+r()*0.5});
+  }
+}
+function gambarBintang(){
+  const w=bgCanvas.width,h=bgCanvas.height;if(!w||!h)return;
+  const t=performance.now()/1000,ox=-kamera.x*kamera.skala,oy=-kamera.y*kamera.skala;
+  bgCtx.clearRect(0,0,w,h);
+  for(const s of bintang){
+    const x=wrap(s.x*w+s.vx*t+ox*s.d,w),y=wrap(s.y*h+s.vy*t+oy*s.d,h);
+    const a=s.base*(0.55+0.45*Math.sin(t*s.sp+s.ph));
+    bgCtx.fillStyle=`rgba(220,230,255,${a.toFixed(3)})`;
+    bgCtx.beginPath();bgCtx.arc(x,y,s.r,0,Math.PI*2);bgCtx.fill();
+  }
+}
+setInterval(()=>{if(!document.hidden&&!(ptr&&ptr.moved)&&!sedangBergerak())gambarBintang();},1000/BINTANG_HZ);
+
+// ==========================================
+// 15. MULAI
 // ==========================================
 resize();
 buatBintang();
-bangunSektor();
-bangunWilayah();
-bangunFaksi();
-for(const s of sektor)if(s.owner>0){FAKSI[s.owner].milik.push(s.idx);if(s.stasiun)FAKSI[s.owner].stasiunN++;}
-bangunJalur();
-const LANGKAH_FAKSI=MENIT_PER_HARI/(FAKSI.length-1);
-FAKSI.forEach((f,i)=>{if(i>0)heapPush({t:i*LANGKAH_FAKSI,k:'F',f});});
-kamera.skala=SKALA_MIN;
-bakeWilayah();bakeKotor=false;lastBake=performance.now();
+mulaiDunia(true);
+setInterval(simpan,SIMPAN_JEDA_MS);
+document.addEventListener('visibilitychange',()=>{if(document.hidden)simpan();});
+window.addEventListener('beforeunload',simpan);
 minta();
 </script>
 </body>
