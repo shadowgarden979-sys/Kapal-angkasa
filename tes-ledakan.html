@@ -1,349 +1,201 @@
 <!DOCTYPE html>
 <html lang="id">
 <head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no" />
-  <title>Uji Gelombang Kejut Transparan Beriak</title>
-  <style>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Cosmoteer Explosion Test</title>
+<style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
-    body {
-      background: #07090f;
-      overflow: hidden;
-      font-family: monospace;
-      color: #cbd5e1;
-      touch-action: none;
-    }
-    canvas { display: block; }
-    #hud {
-      position: fixed;
-      top: 12px;
-      left: 12px;
-      background: rgba(15, 23, 42, 0.75);
-      border: 1px solid #334155;
-      padding: 8px 12px;
-      border-radius: 6px;
-      pointer-events: none;
-      font-size: 13px;
-      line-height: 1.5;
-    }
-    .highlight { color: #38bdf8; font-weight: bold; }
-  </style>
+  body { background: #050510; overflow: hidden; font-family: sans-serif; color: white; }
+  canvas { display: block; }
+  #ui {
+    position: fixed; top: 15px; left: 50%; transform: translateX(-50%);
+    text-align: center; z-index: 10; pointer-events: none;
+  }
+  #ui h1 { font-size: 18px; letter-spacing: 2px; }
+  #ui p { font-size: 12px; opacity: 0.7; margin-top: 4px; }
+  #controls {
+    position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%);
+    display: flex; gap: 10px; z-index: 10;
+  }
+  button {
+    padding: 12px 20px; border: none; border-radius: 20px;
+    background: #ff6b00; color: white; font-weight: bold; cursor: pointer;
+  }
+  button:nth-child(2) { background: #00aaff; }
+  button:nth-child(3) { background: #ff0055; }
+  button:active { transform: scale(0.95); }
+</style>
 </head>
 <body>
-  <div id="hud">
-    <div><span class="highlight">TAP / KLIK LAYAR</span> : Picu Gelombang Transparan</div>
-    <div>FPS: <span id="fps" class="highlight">60</span> | Objek Sel: <span id="count">0</span></div>
-  </div>
-  <canvas id="c"></canvas>
+
+<div id="ui">
+  <h1>💥 COSMOTEER EXPLOSION TEST</h1>
+  <p>Klik di mana aja untuk meledak • Atau pencet tombol bawah</p>
+</div>
+
+<div id="controls">
+  <button onclick="spawnExplosion(innerWidth/2, innerHeight/2, 1)">Ledakan Kecil</button>
+  <button onclick="spawnExplosion(innerWidth/2, innerHeight/2, 2.5)">Ledakan Sedang</button>
+  <button onclick="spawnExplosion(innerWidth/2, innerHeight/2, 5)">LEDAKAN REAKTOR!</button>
+</div>
+
+<canvas id="game"></canvas>
 
 <script>
-const canvas = document.getElementById('c');
+const canvas = document.getElementById('game');
 const ctx = canvas.getContext('2d');
-const fpsEl = document.getElementById('fps');
-const countEl = document.getElementById('count');
+canvas.width = innerWidth;
+canvas.height = innerHeight;
 
-let W = canvas.width = window.innerWidth;
-let H = canvas.height = window.innerHeight;
-window.addEventListener('resize', () => {
-  W = canvas.width = window.innerWidth;
-  H = canvas.height = window.innerHeight;
-});
+let particles = [];
+let shockwaves = [];
+let flashes = [];
+let shake = 0;
+let stars = [];
 
-const CELL_SIZE = 16;
-
-// --- 1. KAMERA MATI + SCREEN SHAKE ---
-const camera = {
-  trauma: 0,
-  maxOffset: 26,
-  time: 0,
-  addTrauma(amount) {
-    this.trauma = Math.min(1, this.trauma + amount);
-  },
-  update(dt) {
-    this.time += dt;
-    this.trauma = Math.max(0, this.trauma - dt * 1.6);
-  },
-  apply(ctx) {
-    if (this.trauma <= 0.001) return;
-    const shake = this.trauma * this.trauma;
-    const ox = Math.sin(this.time * 65) * this.maxOffset * shake;
-    const oy = Math.cos(this.time * 53) * this.maxOffset * shake;
-    ctx.translate(ox, oy);
-  }
-};
-
-// --- 2. KELOMPOK SEL UJI ---
-const cellClusters = [];
-
-function spawnTestClusters() {
-  cellClusters.length = 0;
-  const cx = W / 2;
-  const cy = H / 2;
-
-  const presets = [
-    { cols: 3, rows: 3, x: cx - 140, y: cy - 90,  color: '#38bdf8' },
-    { cols: 4, rows: 2, x: cx + 130, y: cy - 110, color: '#4ade80' },
-    { cols: 6, rows: 6, x: cx - 180, y: cy + 120, color: '#facc15' },
-    { cols: 8, rows: 5, x: cx + 170, y: cy + 100, color: '#fb923c' },
-    { cols: 2, rows: 2, x: cx,       y: cy - 180, color: '#f472b6' }
-  ];
-
-  for (const p of presets) {
-    const totalCells = p.cols * p.rows;
-    cellClusters.push({
-      x: p.x, y: p.y,
-      vx: 0, vy: 0,
-      angle: 0, angVel: 0,
-      cols: p.cols, rows: p.rows,
-      mass: totalCells,
-      color: p.color
-    });
-  }
-  countEl.textContent = cellClusters.reduce((sum, c) => sum + c.mass, 0);
+// Bintang background biar kayak luar angkasa
+for(let i=0;i<150;i++){
+  stars.push({x: Math.random()*canvas.width, y: Math.random()*canvas.height, r: Math.random()*1.5+0.3});
 }
 
-// --- 3. GELOMBANG KEJUT TRANSPARAN BERIAK ---
-const shockwaves = [];
-const sparks = [];
+// === 1. FUNGSI UTAMA LEDAKAN - ALA COSMOTEER ===
+function spawnExplosion(x, y, size = 1){
+  shake = 8 * size;
 
-function triggerExplosion(x, y) {
-  const maxRadius = 500;
-  const baseForce = 1800;
+  // A. FLASH - Kilatan putih langsung
+  flashes.push({x, y, r: 10, maxR: 90*size, alpha: 1, size});
 
-  camera.addTrauma(0.95);
+  // B. SHOCKWAVE - Ring yang ngembang
+  shockwaves.push({x, y, r: 5, maxR: 220*size, alpha: 0.9});
 
-  // Gelombang utama (riak besar transparan)
-  shockwaves.push({
-    x, y,
-    radius: 12,
-    maxRadius,
-    speed: 1050,
-    life: 1.0,
-    freq: 14,          // Jumlah gelombang riak di sekeliling lingkaran
-    amp: 9,            // Tinggi gelombang riak (piksel)
-    phase: Math.random() * 6.28,
-    tint: '186, 230, 253' // Biru sangat muda bening
-  });
-
-  // Gelombang susulan (riak kedua yang lebih rapat & hangat)
-  shockwaves.push({
-    x, y,
-    radius: 6,
-    maxRadius: maxRadius * 0.72,
-    speed: 820,
-    life: 1.0,
-    freq: 20,
-    amp: 6,
-    phase: Math.random() * 6.28,
-    tint: '254, 215, 170' // Putih-oranye hangat transparan
-  });
-
-  // Percikan tipis
-  for (let i = 0; i < 20; i++) {
-    const a = (Math.PI * 2 * i) / 20 + (Math.random() - 0.5) * 0.2;
-    const spd = 120 + Math.random() * 360;
-    sparks.push({
-      x, y,
-      vx: Math.cos(a) * spd,
-      vy: Math.sin(a) * spd,
-      life: 0.35 + Math.random() * 0.3,
-      maxLife: 0.65
+  // C. FIREBALL - Bola api utama
+  for(let i=0;i<25*size;i++){
+    let angle = Math.random()*Math.PI*2;
+    let speed = Math.random()*2+0.5;
+    particles.push({
+      type: 'fire', x, y,
+      vx: Math.cos(angle)*speed, vy: Math.sin(angle)*speed,
+      r: Math.random()*22*size+10, life: 1, decay: 0.02+Math.random()*0.02,
+      color: ['#fff700','#ffaa00','#ff5500','#ff2200'][Math.floor(Math.random()*4)]
     });
   }
 
-  // Dorongan fisik ke kelompok sel
-  for (const c of cellClusters) {
-    const dx = c.x - x;
-    const dy = c.y - y;
-    const dist = Math.hypot(dx, dy);
+  // D. DEBRIS - Potongan metal mental
+  for(let i=0;i<20*size;i++){
+    let angle = Math.random()*Math.PI*2;
+    let speed = Math.random()*7+2;
+    particles.push({
+      type: 'debris', x, y,
+      vx: Math.cos(angle)*speed, vy: Math.sin(angle)*speed,
+      r: Math.random()*4+2, life: 1, decay: 0.015,
+      rot: Math.random()*Math.PI, vr: (Math.random()-0.5)*0.4,
+      color: '#8a8a9a'
+    });
+  }
 
-    if (dist < maxRadius && dist > 1) {
-      const falloff = 1 - (dist / maxRadius);
-      const impulse = (baseForce * falloff * falloff) / Math.sqrt(c.mass);
+  // E. SPARKS - Percikan api kecil cepet
+  for(let i=0;i<40*size;i++){
+    let angle = Math.random()*Math.PI*2;
+    let speed = Math.random()*10+4;
+    particles.push({
+      type: 'spark', x, y,
+      vx: Math.cos(angle)*speed, vy: Math.sin(angle)*speed,
+      r: Math.random()*2+1, life: 1, decay: 0.03,
+      color: '#ffff99'
+    });
+  }
 
-      c.vx += (dx / dist) * impulse;
-      c.vy += (dy / dist) * impulse;
-      c.angVel += ((Math.random() - 0.5) * 6 * falloff) / Math.sqrt(c.mass);
-    }
+  // F. SMOKE - Asap yang naik pelan & awet
+  for(let i=0;i<18*size;i++){
+    let angle = Math.random()*Math.PI*2;
+    particles.push({
+      type: 'smoke', x: x+(Math.random()-0.5)*20, y: y+(Math.random()-0.5)*20,
+      vx: Math.cos(angle)*0.5, vy: Math.sin(angle)*0.5 - 0.3,
+      r: Math.random()*15*size+8, life: 1, decay: 0.008,
+      color: '100,100,110'
+    });
   }
 }
 
-// Fungsi menggambar path lingkaran bergelombang (Wavy Circle)
-function traceWavyCircle(ctx, cx, cy, baseRadius, freq, amp, phase) {
-  const segments = 64; // Cukup halus tapi sangat ringan di CPU mobile
-  ctx.beginPath();
-  for (let i = 0; i <= segments; i++) {
-    const theta = (i / segments) * Math.PI * 2;
-    // Kombinasi 2 frekuensi sinus agar gelombang terlihat alami tidak simetris kaku
-    const wave = Math.sin(theta * freq + phase) * amp
-               + Math.cos(theta * (freq * 0.5) - phase * 1.3) * (amp * 0.45);
-    const r = Math.max(1, baseRadius + wave);
-    const px = cx + Math.cos(theta) * r;
-    const py = cy + Math.sin(theta) * r;
-    if (i === 0) ctx.moveTo(px, py);
-    else ctx.lineTo(px, py);
-  }
-  ctx.closePath();
-}
+// === 2. LOOP GAME ===
+function update(){
+  ctx.clearRect(0,0,canvas.width,canvas.height);
 
-// --- 4. UPDATE & RENDER ---
-function update(dt) {
-  camera.update(dt);
-
-  for (const c of cellClusters) {
-    c.x += c.vx * dt;
-    c.y += c.vy * dt;
-    c.angle += c.angVel * dt;
-
-    c.vx *= 0.992;
-    c.vy *= 0.992;
-    c.angVel *= 0.99;
-
-    const pad = 40;
-    if (c.x < pad) { c.x = pad; c.vx *= -0.6; }
-    if (c.x > W - pad) { c.x = W - pad; c.vx *= -0.6; }
-    if (c.y < pad) { c.y = pad; c.vy *= -0.6; }
-    if (c.y > H - pad) { c.y = H - pad; c.vy *= -0.6; }
-  }
-
-  for (let i = shockwaves.length - 1; i >= 0; i--) {
-    const sw = shockwaves[i];
-    sw.radius += sw.speed * dt;
-    sw.phase += dt * 28; // Kecepatan getaran riak pinggiran
-    sw.life = 1 - (sw.radius / sw.maxRadius);
-    if (sw.life <= 0) shockwaves.splice(i, 1);
-  }
-
-  for (let i = sparks.length - 1; i >= 0; i--) {
-    const sp = sparks[i];
-    sp.x += sp.vx * dt;
-    sp.y += sp.vy * dt;
-    sp.vx *= 0.95;
-    sp.vy *= 0.95;
-    sp.life -= dt;
-    if (sp.life <= 0) sparks.splice(i, 1);
-  }
-}
-
-function draw() {
-  ctx.fillStyle = '#07090f';
-  ctx.fillRect(0, 0, W, H);
-
+  // Shake kamera
   ctx.save();
-  camera.apply(ctx);
-
-  // Grid latar belakang (agar efek transparan gelombang terlihat jelas saat melewatinya)
-  ctx.strokeStyle = '#141d2e';
-  ctx.lineWidth = 1;
-  const gridStep = 48; // 3 sel
-  for (let gx = 0; gx < W; gx += gridStep) {
-    ctx.beginPath(); ctx.moveTo(gx, 0); ctx.lineTo(gx, H); ctx.stroke();
-  }
-  for (let gy = 0; gy < H; gy += gridStep) {
-    ctx.beginPath(); ctx.moveTo(0, gy); ctx.lineTo(W, gy); ctx.stroke();
+  if(shake > 0){
+    ctx.translate((Math.random()-0.5)*shake, (Math.random()-0.5)*shake);
+    shake *= 0.9;
   }
 
-  // Gambar kelompok sel
-  for (const c of cellClusters) {
-    ctx.save();
-    ctx.translate(c.x, c.y);
-    ctx.rotate(c.angle);
+  // Gambar bintang
+  ctx.fillStyle = 'white';
+  stars.forEach(s => { ctx.globalAlpha = 0.6; ctx.beginPath(); ctx.arc(s.x, s.y, s.r, 0, Math.PI*2); ctx.fill(); });
+  ctx.globalAlpha = 1;
 
-    const wPx = c.cols * CELL_SIZE;
-    const hPx = c.rows * CELL_SIZE;
-    const startX = -wPx / 2;
-    const startY = -hPx / 2;
-
-    ctx.fillStyle = c.color;
-    ctx.strokeStyle = '#0f172a';
-    ctx.lineWidth = 1.5;
-
-    for (let r = 0; r < c.rows; r++) {
-      for (let col = 0; col < c.cols; col++) {
-        const px = startX + col * CELL_SIZE;
-        const py = startY + r * CELL_SIZE;
-        ctx.fillRect(px, py, CELL_SIZE, CELL_SIZE);
-        ctx.strokeRect(px, py, CELL_SIZE, CELL_SIZE);
-      }
-    }
-    ctx.restore();
-  }
-
-  // Gambar percikan
-  for (const sp of sparks) {
-    const alpha = Math.max(0, sp.life / sp.maxLife);
-    ctx.fillStyle = `rgba(253, 224, 71, ${alpha * 0.85})`;
-    ctx.fillRect(sp.x - 2, sp.y - 2, 4, 4);
-  }
-
-  // Gambar gelombang kejut transparan beriak
-  for (const sw of shockwaves) {
-    ctx.save();
-    // Mode 'lighter' membuat gelombang terlihat seperti cahaya/energi bening tanpa menutup objek di bawahnya
-    ctx.globalCompositeOperation = 'lighter';
-
-    const currentAmp = sw.amp * sw.life;
-    const outerR = sw.radius + currentAmp + 6;
-    const innerR = Math.max(0, sw.radius * 0.72);
-
-    // 1. Isi gradien radial transparan (bening di tengah, sedikit berkilau di tepi gelombang)
-    const grad = ctx.createRadialGradient(sw.x, sw.y, innerR, sw.x, sw.y, outerR);
-    grad.addColorStop(0.0, `rgba(${sw.tint}, 0)`);
-    grad.addColorStop(0.65, `rgba(${sw.tint}, ${sw.life * 0.05})`);
-    grad.addColorStop(0.88, `rgba(${sw.tint}, ${sw.life * 0.16})`);
-    grad.addColorStop(1.0, `rgba(${sw.tint}, 0)`);
-
-    traceWavyCircle(ctx, sw.x, sw.y, sw.radius, sw.freq, currentAmp, sw.phase);
+  // Flash
+  flashes = flashes.filter(f => f.alpha > 0);
+  flashes.forEach(f => {
+    f.r += 12 * f.size; f.alpha -= 0.08;
+    let grad = ctx.createRadialGradient(f.x,f.y,0,f.x,f.y,f.r);
+    grad.addColorStop(0, `rgba(255,255,255,${f.alpha})`);
+    grad.addColorStop(0.5, `rgba(255,220,0,${f.alpha*0.8})`);
+    grad.addColorStop(1, 'rgba(255,100,0,0)');
     ctx.fillStyle = grad;
-    ctx.fill();
+    ctx.beginPath(); ctx.arc(f.x,f.y,f.r,0,Math.PI*2); ctx.fill();
+  });
 
-    // 2. Garis riak tepi tipis yang sangat transparan
-    ctx.lineWidth = Math.max(1, 5 * sw.life);
-    ctx.strokeStyle = `rgba(${sw.tint}, ${sw.life * 0.28})`;
-    ctx.stroke();
+  // Shockwave
+  shockwaves = shockwaves.filter(s => s.alpha > 0);
+  shockwaves.forEach(s => {
+    s.r += 12; s.alpha -= 0.03;
+    ctx.strokeStyle = `rgba(255,255,255,${s.alpha})`;
+    ctx.lineWidth = 3;
+    ctx.beginPath(); ctx.arc(s.x,s.y,s.r,0,Math.PI*2); ctx.stroke();
+  });
 
-    // 3. Bayangan riak dalam (memberi kesan gelombang tekanan berlapis)
-    if (sw.radius > 25) {
-      traceWavyCircle(ctx, sw.x, sw.y, sw.radius - 14, sw.freq, currentAmp * 0.7, -sw.phase);
-      ctx.lineWidth = Math.max(1, 2.5 * sw.life);
-      ctx.strokeStyle = `rgba(${sw.tint}, ${sw.life * 0.15})`;
-      ctx.stroke();
+  // Particles
+  particles = particles.filter(p => p.life > 0);
+  particles.forEach(p => {
+    p.x += p.vx; p.y += p.vy;
+    p.vx *= 0.98; p.vy *= 0.98; // gesekan udara
+    p.life -= p.decay;
+
+    if(p.type === 'fire'){
+      ctx.globalAlpha = p.life;
+      ctx.fillStyle = p.color;
+      ctx.beginPath(); ctx.arc(p.x,p.y,p.r*p.life+2,0,Math.PI*2); ctx.fill();
     }
-
-    ctx.restore();
-  }
-
+    if(p.type === 'debris'){
+      p.rot += p.vr;
+      ctx.save(); ctx.translate(p.x,p.y); ctx.rotate(p.rot);
+      ctx.globalAlpha = p.life; ctx.fillStyle = p.color;
+      ctx.fillRect(-p.r,-p.r/2,p.r*2,p.r);
+      ctx.restore();
+    }
+    if(p.type === 'spark'){
+      ctx.globalAlpha = p.life; ctx.fillStyle = p.color;
+      ctx.beginPath(); ctx.arc(p.x,p.y,p.r,0,Math.PI*2); ctx.fill();
+    }
+    if(p.type === 'smoke'){
+      ctx.globalAlpha = p.life * 0.4; ctx.fillStyle = `rgba(${p.color},1)`;
+      ctx.beginPath(); ctx.arc(p.x,p.y,p.r + (1-p.life)*20,0,Math.PI*2); ctx.fill();
+    }
+  });
+  ctx.globalAlpha = 1;
   ctx.restore();
+  requestAnimationFrame(update);
 }
+update();
 
-canvas.addEventListener('pointerdown', (e) => {
-  triggerExplosion(e.clientX, e.clientY);
+// Klik = Ledakan
+canvas.addEventListener('pointerdown', e => {
+  spawnExplosion(e.clientX, e.clientY, 1.5);
 });
 
-spawnTestClusters();
-setTimeout(() => triggerExplosion(W / 2, H / 2), 400);
-
-let lastTime = performance.now();
-let frames = 0;
-let fpsTimer = 0;
-
-function loop(now) {
-  const dt = Math.min(0.05, (now - lastTime) / 1000);
-  lastTime = now;
-
-  frames++;
-  fpsTimer += dt;
-  if (fpsTimer >= 0.5) {
-    fpsEl.textContent = Math.round(frames / fpsTimer);
-    frames = 0;
-    fpsTimer = 0;
-  }
-
-  update(dt);
-  draw();
-  requestAnimationFrame(loop);
-}
-requestAnimationFrame(loop);
+// Auto ledakan pas awal biar langsung kelihatan
+setTimeout(()=> spawnExplosion(innerWidth/2, innerHeight/2, 2), 500);
 </script>
 </body>
 </html>
